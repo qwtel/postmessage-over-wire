@@ -1,7 +1,5 @@
 import { Encoder, Decoder, Options } from 'cbor-x';
 
-// import { TransformStream } from './webStream.ts';
-
 export class CBOREncoderTransformStream extends TransformStream<any, Uint8Array> {
   constructor(options: Options & { encoder?: Encoder } = {}) {
     options = { ...options, sequential: true };
