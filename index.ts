@@ -1,6 +1,5 @@
-import * as CBOR from "cbor-x";
-import { CBOREncoderTransformStream, CBORDecoderTransformStream } from "./cbor-x-webstream.ts";
 import { TypedEventListenerOrEventListenerObject, TypedEventTarget } from "@worker-tools/typed-event-target";
+import { Serializer, SerializerStream, Deserializer, DeserializerStream } from '@workers/v8-value-serializer';
 import { streamToAsyncIter } from 'whatwg-stream-to-async-iter'
 
 //#region Library functions
@@ -58,9 +57,6 @@ if (!('ErrorEvent' in globalThis)) {
 
 // const loggingFinalizer = new FinalizationRegistry((heldValue: any[]) => console.log('Finalizing...', ...heldValue));
 //#endregion
-
-const cborEncoder = new CBOR.Encoder({ structuredClone: true, useRecords: false, pack: false, tagUint8Array: true, structures: undefined })
-const cborDecoder = new CBOR.Decoder({ structuredClone: true, useRecords: false, pack: false, tagUint8Array: true, structures: undefined })
 
 const MaxUint32 = 0xffff_ffff;
 const MaxUint64n = 0xffff_ffff_ffff_ffffn;
@@ -309,7 +305,7 @@ function serializeWithTransferResult(value: any, ports: WireMessagePort[]): Seri
 
       return { id, remoteId }
     }) ?? [];
-    const serialized = cborEncoder.encode(value);
+    const serialized = new WireSerializer({ forceUtf8: true }).serialize(value);
     return { serialized, transferResult };
   } finally {
     serializeMemory.clear();
@@ -327,7 +323,7 @@ function deserializeWithTransfer(value: SerializedWithTransferResult): [any, Wir
       deserializeMemory.set(id, port);
       return port;
     });
-    const data = cborDecoder.decode(serialized);
+    const data = new WireDeserializer(serialized).deserialize();
     return [data, ports];
   } finally {
     deserializeMemory.clear();
@@ -554,8 +550,8 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
     _id.set(this, DefaultPortId); 
     _remoteId.set(this, DefaultPortId);
 
-    const writable: WritableStream<RPCMessage> = pipeFrom(stream.writable, new CBOREncoderTransformStream());
-    const readable: ReadableStream<RPCMessage> = stream.readable.pipeThrough(new CBORDecoderTransformStream());
+    const writable: WritableStream<RPCMessage> = pipeFrom(stream.writable, new SerializerStream());
+    const readable: ReadableStream<RPCMessage> = stream.readable.pipeThrough(new DeserializerStream());
     const writer = tagWriter(writable.getWriter(), identifier);
     _writer.set(this, writer);
 
@@ -614,27 +610,33 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
   // #endregion
 }
 
-CBOR.addExtension({
-  tag: 0x524a,
-  Class: RegExp,
-  encode(regexp, encode) { return encode([regexp.source, regexp.flags]) },
-  decode(data: [string, string]) { return new RegExp(data[0], data[1]) },
-});
+const kMessagePortTag = 77;
 
-CBOR.addExtension({
-  tag: 0xcab0,
-  Class: WireMessagePort,
-  encode(value: WireMessagePort, encode) {
-    const transferResult = serializeMemory.get(value);
-    if (!transferResult) throw new DOMException('Port not transferred', 'DataCloneError');
-    return encode(transferResult);
-  },
-  decode(value: TransferResult) {
-    const port = deserializeMemory.get(value.id);
-    if (!port) throw new DOMException("Port was not part of transfer list", 'DataCloneError');
-    return port;
-  },
-})
+class WireSerializer extends Serializer {
+  get hasCustomHostObjects() { return true }
+  isHostObject(object: unknown) {
+    return object instanceof WireMessagePort;
+  }
+  writeHostObject(object: object) {
+    if (object instanceof WireMessagePort) {
+      this.serializer.writeUint32(kMessagePortTag); // tag
+      const transferResult = serializeMemory.get(object);
+      return !!transferResult && this.serializer.writeObject(transferResult);
+    }
+    return super.writeHostObject(object);
+  }
+}
+
+class WireDeserializer extends Deserializer {
+  readHostObjectForTag(tag: number) {
+    if (tag === kMessagePortTag) {
+      const value = this.deserializer.readObjectWrapper() as TransferResult|null;
+      const port = value && deserializeMemory.get(value.id);
+      return port ?? null;
+    }
+    return super.readHostObjectForTag(tag);
+  }
+};
 
 /** @deprecated For testing only! */
 export const __internals = {
