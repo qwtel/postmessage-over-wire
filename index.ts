@@ -2,6 +2,10 @@ import { TypedEventListenerOrEventListenerObject, TypedEventTarget } from "@work
 import { Serializer, SerializerStream, Deserializer, DeserializerStream } from '@workers/v8-value-serializer';
 import { streamToAsyncIter } from 'whatwg-stream-to-async-iter'
 
+const sDispose: unique symbol = 'dispose' in Symbol
+  ? Symbol.dispose as any 
+  : (Symbol as typeof globalThis.Symbol).for('Symbol.dispose');
+
 //#region Library functions
 const ensureAsyncIter = <T>(stream: ReadableStream<T>): AsyncIterable<T> => Symbol.asyncIterator in stream 
   ? stream as AsyncIterable<T> 
@@ -459,7 +463,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
     this.#cleanup();
   }
 
-  [Symbol.dispose]() {
+  [sDispose]() {
     this.close();
   }
 
@@ -582,7 +586,7 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
     this.#writer.close().catch(() => {});
   }
 
-  [Symbol.dispose]() {
+  [sDispose]() {
     this.terminate();
   }
 
