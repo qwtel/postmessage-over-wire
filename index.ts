@@ -14,7 +14,7 @@ const ensureAsyncIter = <T>(stream: ReadableStream<T>): AsyncIterable<T> => Symb
 /** It's like `pipeThrough`, but for `WritableStream`s. It ensures that every chunk written to `dest` is transformed by `transform`. */
 function pipeFrom<T, U>(dest: WritableStream<U>, transform: TransformStream<T, U>): WritableStream<T> {
   const { writable, readable } = transform;
-  readable.pipeTo(dest);
+  readable.pipeTo(dest).catch(() => {}); // error will be forwarded, but need to catch here to prevent unhandled promise rejection
   return writable;
 }
 
@@ -98,11 +98,13 @@ const kGlobalRouteTable = Symbol.for('pM-globalRouteTable');
 const globalRouteTable: Map<PortId, RPCWriter> = ((globalThis as any)[kGlobalRouteTable] ||= new Map());
 
 export type EndpointLike = { dispatchEvent(ev: Event): void }
+
 const _writer = new WeakMap<EndpointLike, RPCWriter>();
 const _id = new WeakMap<EndpointLike, PortId>();
 const _remoteId = new WeakMap<EndpointLike, PortId|null>();
 const _detached = new WeakMap<EndpointLike, boolean>();
 const _shipped = new WeakMap<RPCWriter, boolean>();
+const _ownedPorts = new WeakMap<RPCWriter, WireMessagePort[]>();
 
 // FIXME: Must the unshipped event loop be a super global as well?
 const unshippedStream = new TransformStream<RPCMessage, RPCMessage>();
@@ -150,7 +152,7 @@ function acknowledgeTransfer(this: EndpointLike, destId: PortId, srcId: PortId, 
     // We attach a copy of the transfer results and the original port id, s.t. intermediate nodes can potentially clean up their routing tables.
     // This happens when a port was sent in the direction it came from. Note that we can only clean up routing tables after receiving Ack,
     // since in-flight messages from the other side could still arrive and need to be forwarded (returned) to avoid loss of messages.
-    writer.write([Header, MsgCode.Ack, destId, srcId, transferResult, null])//.catch(console.warn);
+    writer.write([Header, MsgCode.Ack, destId, srcId, transferResult, null]).catch(() => {});
   }
 }
 
@@ -197,7 +199,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
               globalRouteTable.set(id, writer);
             }
 
-            await writer.write(rpcMessage);
+            writer.write(rpcMessage).catch(() => {});
           }
           // Note: Messages can get dropped here if a close message is traveling the other direction, which is fine.
           break;
@@ -223,7 +225,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
             }
 
             // Forwarding the Ack message
-            await writer.write(rpcMessage);
+            writer.write(rpcMessage).catch(() => {});
           }
 
           break;
@@ -239,7 +241,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
           initPortId && globalRouteTable.delete(initPortId);
 
           // Forward the close message if we haven't reached the destination yet
-          await writer?.write(rpcMessage);
+          writer?.write(rpcMessage).catch(() => {});
 
           break;
         }
@@ -248,8 +250,6 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
         }
       }
     } catch (err) {
-      // TODO: what do here??
-      console.error(err);
       this.dispatchEvent(new WireMessageEvent('messageerror', { data: err }));
       continue;
     }
@@ -279,8 +279,8 @@ function postMessage(this: WireEndpoint|WireMessagePort, destId: PortId|null, sr
 
   // Keep the shipped status updated
   if (_shipped.has(writer)) {
-    for (const port of ports) {
-      const portWriter = globalRouteTable.get(_remoteId.get(port)!);
+    for (const [,remoteId] of transferResult) {
+      const portWriter = globalRouteTable.get(remoteId!);
       portWriter && _shipped.set(portWriter, true);
     }
   }
@@ -288,7 +288,7 @@ function postMessage(this: WireEndpoint|WireMessagePort, destId: PortId|null, sr
   // FIXME: What do when write fails??
   // UPDATE: When writing fails, the stream is errored and all future writes will fail as well. There is no recovering from this.
   // In that case, we actually have to send a message in other direction to clean up routing tables along the way and error the original sender.
-  writer.write([Header, MsgCode.Message, destId, srcId, transferResult, serialized])//.catch(console.warn);
+  writer.write([Header, MsgCode.Message, destId, srcId, transferResult, serialized]).catch(() => {});
 }
 
 // Temporary storage for deduplication
@@ -305,7 +305,7 @@ function serializeWithTransferResult(value: any, ports: WireMessagePort[]): Seri
 
       _detached.set(port, true);
       _remoteIdSetter(port, null);
-      _writer.get(port)!.close()//.catch(console.warn); // FIXME
+      _writer.get(port)!.close().catch(() => {}); // FIXME
 
       return [id, remoteId] as const;
     }) ?? [];
@@ -334,10 +334,10 @@ function deserializeWithTransfer(value: SerializedWithTransferResult): [any, Wir
   }
 }
 
-async function finalizeMessagePort([id, remoteId]: TransferResult) {
+function finalizeMessagePort([id, remoteId]: TransferResult) {
   if (remoteId) {
     // TODO: what do when write fails?
-    await globalRouteTable.get(remoteId)?.write([Header, MsgCode.Close, remoteId, id, null, null])//.catch(console.warn)
+    globalRouteTable.get(remoteId)?.write([Header, MsgCode.Close, remoteId, id, null, null]).catch(() => {})
     globalRouteTable.delete(remoteId); // ensure close op isn't sent twice
   }
   globalRouteTable.delete(id);
@@ -385,6 +385,12 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
     _writer.set(this, writer);
 
     _shipped.set(writer, !!remoteId); // if the port has a remote id it was shipped
+    if (remoteId) {
+      const remoteWriter = globalRouteTable.get(remoteId);
+      if (!remoteWriter) throw Error("AssertionError: Remote writer not found");
+      _ownedPorts.get(remoteWriter)!.push(this);
+    }
+
     _detached.set(this, false);
 
     globalRouteTable.set(id, writer);
@@ -393,7 +399,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   get #id() { return _id.get(this)! }
   get #remoteId() { return _remoteId.get(this) ?? null }
   get #writer() { return _writer.get(this)! }
-  get #detached() { return _detached.get(this)! }
+  // get #detached() { return _detached.get(this)! }
 
   #updateOnceListenerCount() {
     for (const [listener, { once }] of this.#messageHandlers) {
@@ -443,11 +449,12 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   }
 
   #cleanup() {
+    // TODO: remove from _localPorts!?
     _detached.set(this, true);
     _remoteIdSetter(this, null);
     this.#messageHandlers.clear();
     globalNonGCedPorts.delete(this);
-    this.#writer.close()//.catch(console.warn); // FIXME
+    this.#writer.close().catch(() => {}); // FIXME
   }
 
   postMessage(message: any, transfer?: Transferable[] | StructuredSerializeOptions): void {
@@ -455,7 +462,9 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   }
 
   start(): void {
-    this.#enabled ||= this.#startReceiverLoop(this.#readable);
+    this.#enabled ||= this.#startReceiverLoop(this.#readable).catch(error => {
+      this.dispatchEvent(new ErrorEvent('error', { error }));
+    });
   }
 
   close(): void {
@@ -479,6 +488,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   toNative(): MessagePort {
     if (this.#nativePort) return this.#nativePort;
     _detached.set(this, true);
+    console.log("toNative??/")
     const { port1: publicPort, port2: privatePort } = new MessageChannel();
     this.onmessage = wireToNative.bind(privatePort)
     privatePort.onmessage = nativeToWrite.bind(this);
@@ -542,6 +552,8 @@ function nativeToWrite(this: WireMessagePort, { data, ports}: MessageEvent) {
 }
 
 export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
+  #writerClosed = false;
+  #ownedPortsClosed = false;
   constructor(
     stream: { 
       readable: ReadableStream<Uint8Array>, 
@@ -557,9 +569,14 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
     const writable: WritableStream<RPCMessage> = pipeFrom(stream.writable, new SerializerStream());
     const readable: ReadableStream<RPCMessage> = stream.readable.pipeThrough(new DeserializerStream());
     const writer = tagWriter(writable.getWriter(), identifier);
+    writer.closed.catch(() => {}).finally(() => { 
+      this.#writerClosed = true;
+      this.terminate();
+    });
     _writer.set(this, writer);
 
     _shipped.set(writer, true); // Endpoints are "shipped" by definition.
+    _ownedPorts.set(writer, []);
 
     startReceiverLoop.call(this, readable).catch(error => {
       this.dispatchEvent(new ErrorEvent('error', { error }));
@@ -573,17 +590,24 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
   }
 
   terminate(): void {
-    // If a port is referencing us as a gateway, we have to forcefully close the port:
-    // XXX: What about the other direction??
-    for (const [portId, writer] of globalRouteTable.entries()) {
-      if (writer === this.#writer) {
-        // The writer might already be in an errored state, nothing we can do about that:
-        this.#writer.write([Header, MsgCode.Close, portId, null, null, null]).catch(() => {});
-        globalRouteTable.delete(portId);
+    if (!this.#ownedPortsClosed) {
+      for (const ownedPort of _ownedPorts.get(this.#writer) ?? []) {
+        ownedPort.close();
       }
+      this.#ownedPortsClosed = true;
     }
-    // Might already be closed, nothing we can do about that:
-    this.#writer.close().catch(() => {});
+
+    if (!this.#writerClosed) {
+      // If a port is referencing us as a gateway, we have to forcefully close the port:
+      for (const [portId, writer] of globalRouteTable) {
+        if (writer === this.#writer) {
+          this.#writer.write([Header, MsgCode.Close, portId, null, null, null]).catch(() => {}); // nothing left to do in case of failure
+          globalRouteTable.delete(portId);
+        }
+      }
+      
+      this.#writer.close().catch(() => {});
+    }
   }
 
   [sDispose]() {
@@ -650,6 +674,7 @@ export const __internals = {
   _remoteId,
   _detached,
   _shipped,
+  _ownedPorts,
   unshippedStream,
   unshippedWriter,
   unshippedPortLoop,
