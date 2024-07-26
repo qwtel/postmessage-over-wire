@@ -3,12 +3,12 @@ import { Serializer, SerializerStream, Deserializer, DeserializerStream } from '
 import { streamToAsyncIter } from 'whatwg-stream-to-async-iter'
 
 const sDispose: unique symbol = 'dispose' in Symbol
-  ? Symbol.dispose as any 
+  ? Symbol.dispose as any
   : (Symbol as typeof globalThis.Symbol).for('Symbol.dispose');
 
 //#region Library functions
-const ensureAsyncIter = <T>(stream: ReadableStream<T>): AsyncIterable<T> => Symbol.asyncIterator in stream 
-  ? stream as AsyncIterable<T> 
+const ensureAsyncIter = <T>(stream: ReadableStream<T>): AsyncIterable<T> => Symbol.asyncIterator in stream
+  ? stream as AsyncIterable<T>
   : streamToAsyncIter(stream);
 
 /** It's like `pipeThrough`, but for `WritableStream`s. It ensures that every chunk written to `dest` is transformed by `transform`. */
@@ -21,7 +21,7 @@ function pipeFrom<T, U>(dest: WritableStream<U>, transform: TransformStream<T, U
 /** A function that traverses `data` in a "structured clone"-like fashion, replacing values that match keys in `dict` with their corresponding values. */
 function structuredReplace(data: any, dict: Map<any, any>): any {
   if (dict.has(data)) return dict.get(data);
-  if (Array.isArray(data)) return data.map(x => structuredReplace(x, dict));
+  if (Array.isArray(data)) return data.map(x => structuredReplace(x, dict)); // XXX: array properties quietly dropped
   if (data instanceof Map) return new Map(Array.from(data, ([k, v]) => [structuredReplace(k, dict), structuredReplace(v, dict)]));
   if (data instanceof Set) return new Set(Array.from(data, x => structuredReplace(x, dict)));
   if (typeof data === 'object') { for (const k in data) data[k] = structuredReplace(data[k], dict); return data }
@@ -135,8 +135,8 @@ export class WireMessageEvent<T = any> extends Event implements MessageEvent<T|n
     this.ports = eventInitDict.ports ?? [];
   }
   //#region Boilerplate
-  readonly origin = ''; 
-  readonly lastEventId = ''; 
+  readonly origin = '';
+  readonly lastEventId = '';
   readonly source = null;
   // @ts-ignore
   initMessageEvent(type: string, bubbles?: boolean | undefined, cancelable?: boolean | undefined, data?: any, origin?: string | undefined, lastEventId?: string | undefined, source?: MessageEventSource | null | undefined, ports?: MessagePort[] | undefined): void {
@@ -177,7 +177,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
 
           for (const [,remoteId] of transferResult) {
             if (remoteId && !globalRouteTable.has(remoteId)) {
-              // The direction to reach the other end for any port coming through, even if it's dispatched as a local event below, 
+              // The direction to reach the other end for any port coming through, even if it's dispatched as a local event below,
               // must be the endpoint at which it arrived at.
               globalRouteTable.set(remoteId, _writer.get(this)!);
             }
@@ -488,7 +488,6 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   toNative(): MessagePort {
     if (this.#nativePort) return this.#nativePort;
     _detached.set(this, true);
-    console.log("toNative??/")
     const { port1: publicPort, port2: privatePort } = new MessageChannel();
     this.onmessage = wireToNative.bind(privatePort)
     privatePort.onmessage = nativeToWrite.bind(this);
@@ -521,7 +520,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   }
 
   #onmessage: ((this: MessagePort, ev: MessageEvent<any>) => any)|null = null;
-  set onmessage(handler: ((this: MessagePort, ev: MessageEvent<any>) => any)|null) { 
+  set onmessage(handler: ((this: MessagePort, ev: MessageEvent<any>) => any)|null) {
     if (this.#onmessage) this.removeEventListener('message', this.#onmessage);
     if (handler) this.addEventListener('message', this.#onmessage = handler.bind(this));
     this.start();
@@ -529,7 +528,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   get onmessage() { return this.#onmessage }
 
   #onmessageerror: ((this: MessagePort, ev: MessageEvent<any>) => any)|null = null;
-  set onmessageerror(handler: ((this: MessagePort, ev: MessageEvent<any>) => any)|null) { 
+  set onmessageerror(handler: ((this: MessagePort, ev: MessageEvent<any>) => any)|null) {
     if (this.#onmessageerror) this.removeEventListener('messageerror', this.#onmessageerror);
     if (handler) this.addEventListener('messageerror', this.#onmessageerror = handler.bind(this));
   }
@@ -555,21 +554,21 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
   #writerClosed = false;
   #ownedPortsClosed = false;
   constructor(
-    stream: { 
-      readable: ReadableStream<Uint8Array>, 
+    stream: {
+      readable: ReadableStream<Uint8Array>,
       writable: WritableStream<Uint8Array>,
     },
     identifier?: any,
   ) {
     super();
 
-    _id.set(this, DefaultPortId); 
+    _id.set(this, DefaultPortId);
     _remoteId.set(this, DefaultPortId);
 
     const writable: WritableStream<RPCMessage> = pipeFrom(stream.writable, new SerializerStream());
     const readable: ReadableStream<RPCMessage> = stream.readable.pipeThrough(new DeserializerStream());
     const writer = tagWriter(writable.getWriter(), identifier);
-    writer.closed.catch(() => {}).finally(() => { 
+    writer.closed.catch(() => {}).finally(() => {
       this.#writerClosed = true;
       this.terminate();
     });
@@ -605,7 +604,7 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
           globalRouteTable.delete(portId);
         }
       }
-      
+
       this.#writer.close().catch(() => {});
     }
   }
@@ -616,21 +615,21 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
 
   //#region Boilerplate
   #onmessage: ((this: WireEndpoint, ev: MessageEvent<any>) => any)|null = null;
-  set onmessage(handler: ((this: WireEndpoint, ev: MessageEvent<any>) => any)|null) { 
+  set onmessage(handler: ((this: WireEndpoint, ev: MessageEvent<any>) => any)|null) {
     if (this.#onmessage) this.removeEventListener('message', this.#onmessage);
     if (handler) this.addEventListener('message', this.#onmessage = handler.bind(this));
   }
   get onmessage() { return this.#onmessage }
 
   #onmessageerror: ((this: WireEndpoint, ev: MessageEvent<any>) => any)|null = null;
-  set onmessageerror(handler: ((this: WireEndpoint, ev: MessageEvent<any>) => any)|null) { 
+  set onmessageerror(handler: ((this: WireEndpoint, ev: MessageEvent<any>) => any)|null) {
     if (this.#onmessageerror) this.removeEventListener('messageerror', this.#onmessageerror);
     if (handler) this.addEventListener('messageerror', this.#onmessageerror = handler.bind(this))
   }
   get onmessageerror() { return this.#onmessageerror }
 
   #onerror: ((this: WireEndpoint, ev: ErrorEvent) => any)|null = null;
-  set onerror(handler: ((this: WireEndpoint, ev: ErrorEvent) => any)|null) { 
+  set onerror(handler: ((this: WireEndpoint, ev: ErrorEvent) => any)|null) {
     if (this.#onerror) this.removeEventListener('error', this.#onerror);
     if (handler) this.addEventListener('error', this.#onerror = handler.bind(this))
   }
