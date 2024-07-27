@@ -2,7 +2,8 @@ import { TypedEventListenerOrEventListenerObject, TypedEventTarget } from "@work
 import { Serializer, SerializerStream, Deserializer, DeserializerStream } from '@workers/v8-value-serializer';
 import { streamToAsyncIter } from 'whatwg-stream-to-async-iter'
 
-const sDispose: unique symbol = 'dispose' in Symbol
+//#region Library functions
+const kDispose: unique symbol = 'dispose' in Symbol
   ? Symbol.dispose as any
   : (Symbol as typeof globalThis.Symbol).for('Symbol.dispose');
 
@@ -94,7 +95,7 @@ type RPCWriter = WritableStreamDefaultWriter<RPCMessage> & { identifier: any };
 
 const tagWriter = (writer: WritableStreamDefaultWriter<RPCMessage>, identifier: any): RPCWriter => Object.assign(writer, { identifier });
 
-const kGlobalRouteTable = Symbol.for('pM-globalRouteTable');
+const kGlobalRouteTable = Symbol.for('pM.globalRouteTable');
 const globalRouteTable: Map<PortId, RPCWriter> = ((globalThis as any)[kGlobalRouteTable] ||= new Map());
 
 export type EndpointLike = { dispatchEvent(ev: Event): void }
@@ -472,7 +473,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
     this.#cleanup();
   }
 
-  [sDispose]() {
+  [kDispose]() {
     this.close();
   }
 
@@ -609,7 +610,7 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
     }
   }
 
-  [sDispose]() {
+  [kDispose]() {
     this.terminate();
   }
 
