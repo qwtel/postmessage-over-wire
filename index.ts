@@ -1,5 +1,6 @@
 import { TypedEventListenerOrEventListenerObject, TypedEventTarget } from "@workers/typed-event-target";
-import { Serializer, SerializerStream, Deserializer, DeserializerStream } from '@workers/v8-value-serializer';
+import { SerializerStream, DeserializerStream } from '@workers/v8-value-serializer';
+import { DefaultSerializer, DefaultDeserializer } from '@workers/node-serialization-api';
 import { streamToAsyncIter } from 'whatwg-stream-to-async-iter'
 
 //#region Library functions
@@ -310,7 +311,7 @@ function serializeWithTransferResult(value: any, ports: WireMessagePort[]): Seri
 
       return [id, remoteId] as const;
     }) ?? [];
-    const serialized = new WireSerializer({ forceUtf8: true }).serialize(value);
+    const serialized = new WireSerializer().serialize(value);
     return { serialized, transferResult };
   } finally {
     serializeMemory.clear();
@@ -330,6 +331,9 @@ function deserializeWithTransfer(value: SerializedWithTransferResult): [any, Wir
     });
     const data = new WireDeserializer(serialized).deserialize();
     return [data, ports];
+  } catch (err) {
+    console.error(err)
+    throw err;
   } finally {
     deserializeMemory.clear();
   }
@@ -365,16 +369,19 @@ function _remoteIdSetter(that: WireMessagePort, remoteId: PortId|null) {
 /** Holds strong references to message ports with active `message` listeners to prevent them from being GCed. This is to match spec behavior. */
 const globalNonGCedPorts = new Set<WireMessagePort>();
 
-export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> implements MessagePort {
+// HACK: Extending Uint8Array as a workaround to allow custom host objects in Node's native V8 serializer API.
+export class WireMessagePort extends Uint8Array implements TypedEventTarget<WireMessagePortEventMap>, MessagePort {
   #enabled?: Promise<void>
   #readable;
+  #target;
 
   constructor(key: symbol);
   constructor(key: symbol, designatedId: PortId, remoteId: PortId|null);
   constructor(key: symbol, designatedId?: PortId, remoteId?: PortId|null) {
     if (key !== kMessagePortConstructor) throw new TypeError("Illegal constructor");
 
-    super();
+    super(0);
+    this.#target = new EventTarget();
 
     const id = designatedId ?? generateId();
     _id.set(this, id);
@@ -421,7 +428,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
             if (portId === this.#id) {
               this.#updateOnceListenerCount();
               acknowledgeTransfer.call(this, srcId, portId, transferResult);
-              dispatchAsEvent.call(this, transferResult, buffer);
+              dispatchAsEvent.call(this.#target, transferResult, buffer);
               continue;
             }
             throw Error("Message sent to wrong port")
@@ -433,7 +440,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
             if (portId === this.#id) {
               // No `finalizeMessagePort` here because already cleaned up in main receiver loop.
               this.#cleanup();
-              this.dispatchEvent(new CloseEvent('close', { wasClean: !!initPortId }));
+              this.#target.dispatchEvent(new CloseEvent('close', { wasClean: !!initPortId }));
               continue;
             }
             throw Error("Message sent to wrong port")
@@ -443,7 +450,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
       } catch (err) {
         // TODO: what do here??
         console.error(err);
-        this.dispatchEvent(new WireMessageEvent('messageerror', { data: err }));
+        this.#target.dispatchEvent(new WireMessageEvent('messageerror', { data: err }));
         continue;
       }
     }
@@ -464,7 +471,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
 
   start(): void {
     this.#enabled ||= this.#startReceiverLoop(this.#readable).catch(error => {
-      this.dispatchEvent(new ErrorEvent('error', { error }));
+      this.#target.dispatchEvent(new ErrorEvent('error', { error }));
     });
   }
 
@@ -497,11 +504,15 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   }
 
   //#region Boilerplate
+  dispatchEvent(event: Event): boolean {
+    return this.#target.dispatchEvent(event);
+  }
+
   #messageHandlers: Map<EventListenerOrEventListenerObject, { once: boolean }> = new Map();
   addEventListener<K extends keyof WireMessagePortEventMap>(type: K, listener: TypedEventListenerOrEventListenerObject<WireMessagePortEventMap[K]>|null, options?: boolean|AddEventListenerOptions): void;
   addEventListener(type: string, listener: EventListenerOrEventListenerObject|null, options?: boolean|AddEventListenerOptions|undefined): void;
   addEventListener(type: any, listener: any, options?: any): void {
-    super.addEventListener(type, listener, options);
+    this.#target.addEventListener(type, listener, options);
     if (type === 'message' && isReceiver(listener)) {
       this.#messageHandlers.set(listener as any, { once: options?.once === true });
       globalNonGCedPorts.add(this);
@@ -511,7 +522,7 @@ export class WireMessagePort extends TypedEventTarget<WireMessagePortEventMap> i
   removeEventListener<K extends keyof WireMessagePortEventMap>(type: K, listener: TypedEventListenerOrEventListenerObject<WireMessagePortEventMap[K]>|null, options?: boolean|EventListenerOptions): void;
   removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions | undefined): void;
   removeEventListener(type: any, listener: any, options?: any): void {
-    super.removeEventListener(type, listener, options);
+    this.#target.removeEventListener(type, listener, options);
     if (type === 'message' && isReceiver(listener)) {
       this.#messageHandlers.delete(listener as any);
       if (this.#messageHandlers.size === 0) {
@@ -566,8 +577,8 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
     _id.set(this, DefaultPortId);
     _remoteId.set(this, DefaultPortId);
 
-    const writable: WritableStream<RPCMessage> = pipeFrom(stream.writable, new SerializerStream());
-    const readable: ReadableStream<RPCMessage> = stream.readable.pipeThrough(new DeserializerStream());
+    const writable: WritableStream<RPCMessage> = pipeFrom(stream.writable, new SerializerStream({ serializer: WireSerializer }));
+    const readable: ReadableStream<RPCMessage> = stream.readable.pipeThrough(new DeserializerStream({ deserializer: WireDeserializer }));
     const writer = tagWriter(writable.getWriter(), identifier);
     writer.closed.catch(() => {}).finally(() => {
       this.#writerClosed = true;
@@ -640,29 +651,61 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
 
 const kMessagePortTag = 77;
 
-class WireSerializer extends Serializer {
-  get hasCustomHostObjects() { return true }
-  isHostObject(object: unknown) {
-    return object instanceof WireMessagePort;
+const rawSerialize = (x: any) => {
+  const ser = new DefaultSerializer()
+  ser.writeValue(x);
+  return ser.releaseBuffer();
+}
+
+class WireSerializer extends DefaultSerializer {
+  constructor(_?: any) {
+    super();
+    ((this as any).serializer)?.setForceUtf8(true);
   }
-  writeHostObject(object: object) {
+  get _getDataCloneError() { return Error };
+  _writeHostObject(object: object): void {
     if (object instanceof WireMessagePort) {
-      this.serializer.writeUint32(kMessagePortTag); // tag
+      this.writeUint32(kMessagePortTag); // tag
       const transferResult = serializeMemory.get(object);
-      return !!transferResult && this.serializer.writeObject(transferResult);
+      transferResult && this.writeRawBytes(rawSerialize(transferResult));
+    } else {
+      super._writeHostObject(object as ArrayBufferView);
     }
-    return super.writeHostObject(object);
+  }
+  serialize(value: any): Uint8Array {
+    this.writeHeader();
+    this.writeValue(value);
+    return this.releaseBuffer();
+  }
+  _getSharedArrayBufferId(): never { 
+    throw new Error("Method not implemented.")
   }
 }
 
-class WireDeserializer extends Deserializer {
-  readHostObjectForTag(tag: number) {
+class WireDeserializer extends DefaultDeserializer {
+  #lastTag: number|null = null;
+  _readHostObject(): unknown {
+    const tag = this.readUint32();
     if (tag === kMessagePortTag) {
-      const value = this.deserializer.readObjectWrapper() as TransferResult|null;
+      const value = this.readValue() as TransferResult|null;
       const port = value && deserializeMemory.get(value[0]);
       return port ?? null;
+    } else {
+      this.#lastTag = tag;
+      return super._readHostObject();
     }
-    return super.readHostObjectForTag(tag);
+  }
+  readUint32() {
+    if (this.#lastTag !== null) {
+      const tag = this.#lastTag;
+      this.#lastTag = null;
+      return tag;
+    }
+    return super.readUint32();
+  }
+  deserialize() {
+    this.readHeader();
+    return this.readValue();
   }
 };
 
