@@ -673,32 +673,31 @@ export class WireEndpoint extends TypedEventTarget<WireMessagePortEventMap> {
 
 const kMessagePortTag = 77;
 
-const rawSerialize = (x: any) => {
-  const ser = new DefaultSerializer()
-  ser.writeValue(x);
-  return ser.releaseBuffer();
-}
-
 class WireSerializer extends DefaultSerializer {
   constructor(_?: any) {
     super();
     ((this as any).serializer)?.setForceUtf8(true);
   }
-  get _getDataCloneError() { return Error };
   _writeHostObject(object: object): void {
     if (object instanceof WireMessagePort) {
       this.writeUint32(kMessagePortTag); // tag
       const transferResult = serializeMemory.get(object);
-      transferResult && this.writeRawBytes(rawSerialize(transferResult));
+      transferResult && this.writeRawBytes(this.#serializeRaw(transferResult));
     } else {
       super._writeHostObject(object as ArrayBufferView);
     }
+  }
+  #serializeRaw(value: any) {
+    const ser = new DefaultSerializer();
+    ser.writeValue(value);
+    return ser.releaseBuffer();
   }
   serialize(value: any): Uint8Array {
     this.writeHeader();
     this.writeValue(value);
     return this.releaseBuffer();
   }
+  get _getDataCloneError() { return Error };
   _getSharedArrayBufferId(): never { 
     throw new Error("Method not implemented.")
   }
@@ -717,6 +716,7 @@ class WireDeserializer extends DefaultDeserializer {
       return super._readHostObject();
     }
   }
+  // Need to overwrite this to avoid reading the tag twice in case the host object is not a MessagePort:
   readUint32() {
     if (this.#lastTag !== null) {
       const tag = this.#lastTag;
