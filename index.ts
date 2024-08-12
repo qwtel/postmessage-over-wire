@@ -373,8 +373,10 @@ function _remoteIdSetter(that: WireMessagePort, remoteId: PortId|null) {
 /** Holds strong references to message ports with active `message` listeners to prevent them from being GCed. This is to match spec behavior. */
 const globalNonGCedPorts = new Set<WireMessagePort>();
 
-// HACK: Extending Uint8Array as a workaround to allow custom host objects in Node's native V8 serializer API.
-export class WireMessagePort extends Uint8Array implements TypedEventTarget<WireMessagePortEventMap>, MessagePort {
+const emptyBuffer = new ArrayBuffer(0);
+
+// HACK: Extending DataView as a workaround to allow custom host objects in Node's native V8 serializer API.
+export class WireMessagePort extends DataView implements TypedEventTarget<WireMessagePortEventMap>, MessagePort {
   #enabled?: Promise<void>
   #readable;
   #target;
@@ -384,7 +386,7 @@ export class WireMessagePort extends Uint8Array implements TypedEventTarget<Wire
   constructor(key: symbol, designatedId?: PortId, remoteId?: PortId|null) {
     if (key !== kMessagePortConstructor) throw new TypeError("Illegal constructor");
 
-    super(0);
+    super(emptyBuffer);
     this.#target = new EventTarget();
 
     const id = designatedId ?? generateId();
