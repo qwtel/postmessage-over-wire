@@ -61,6 +61,10 @@ if (!('ErrorEvent' in globalThis)) {
   });
 }
 
+export function isAbortError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 // const loggingFinalizer = new FinalizationRegistry((heldValue: any[]) => console.log('Finalizing...', ...heldValue));
 //#endregion
 
@@ -77,7 +81,7 @@ const DefaultPortId = MaxUint64n;
 
 const Header = "pM" as const; type Header = typeof Header;
 
-export type WireMessagePortEventMap = MessagePortEventMap & { close: CloseEvent };
+export type WireMessagePortEventMap = MessagePortEventMap & { close: CloseEvent, error: ErrorEvent };
 
 type PortId = number | bigint | string
 
@@ -158,12 +162,14 @@ function acknowledgeTransfer(this: EndpointLike, destId: PortId, srcId: PortId, 
   }
 }
 
-function dispatchAsEvent(this: EndpointLike, transferResult: TransferResult[], serialized: Uint8Array) {
+function dispatchAsEvent(this: EndpointLike, transferResult: TransferResult[], serialized: Uint8Array, { nrMessageErrorHandlers = Infinity } = {}) {
   let data, ports;
   try {
     [data, ports] = deserializeWithTransfer({ serialized, transferResult });
   } catch (data) {
-    return this.dispatchEvent(new WireMessageEvent('messageerror', { data }));
+    this.dispatchEvent(new WireMessageEvent('messageerror', { data }));
+    if (nrMessageErrorHandlers === 0) console.error(data);
+    return
   }
   const event = new WireMessageEvent('message', { data, ports });
   return this.dispatchEvent(event);
@@ -253,6 +259,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
       }
     } catch (err) {
       this.dispatchEvent(new WireMessageEvent('messageerror', { data: err }));
+      // TODO: log error iff no messageerror handler registered
       continue;
     }
   }
@@ -331,9 +338,6 @@ function deserializeWithTransfer(value: SerializedWithTransferResult): [any, Wir
     });
     const data = new WireDeserializer(serialized).deserialize();
     return [data, ports];
-  } catch (err) {
-    console.error(err)
-    throw err;
   } finally {
     deserializeMemory.clear();
   }
@@ -428,7 +432,7 @@ export class WireMessagePort extends Uint8Array implements TypedEventTarget<Wire
             if (portId === this.#id) {
               this.#updateOnceListenerCount();
               acknowledgeTransfer.call(this, srcId, portId, transferResult);
-              dispatchAsEvent.call(this.#target, transferResult, buffer);
+              dispatchAsEvent.call(this.#target, transferResult, buffer, { nrMessageErrorHandlers: this.#nrMessageErrorHandlers });
               continue;
             }
             throw Error("Message sent to wrong port")
@@ -448,9 +452,8 @@ export class WireMessagePort extends Uint8Array implements TypedEventTarget<Wire
             throw Error(`Unknown OpCode: ${opCode}`);
         }
       } catch (err) {
-        // TODO: what do here??
-        console.error(err);
         this.#target.dispatchEvent(new WireMessageEvent('messageerror', { data: err }));
+        if (this.#nrMessageErrorHandlers === 0) console.error(err);
         continue;
       }
     }
@@ -471,7 +474,10 @@ export class WireMessagePort extends Uint8Array implements TypedEventTarget<Wire
 
   start(): void {
     this.#enabled ||= this.#startReceiverLoop(this.#readable).catch(error => {
-      this.#target.dispatchEvent(new ErrorEvent('error', { error }));
+      if (!isAbortError(error)) {
+        this.#target.dispatchEvent(new ErrorEvent('error', { error }));
+        if (this.#nrErrorHandlers === 0) console.error(error);
+      }
     });
   }
 
@@ -509,13 +515,20 @@ export class WireMessagePort extends Uint8Array implements TypedEventTarget<Wire
   }
 
   #messageHandlers: Map<EventListenerOrEventListenerObject, { once: boolean }> = new Map();
+  #nrErrorHandlers = 0;
+  #nrMessageErrorHandlers = 0;
+
   addEventListener<K extends keyof WireMessagePortEventMap>(type: K, listener: TypedEventListenerOrEventListenerObject<WireMessagePortEventMap[K]>|null, options?: boolean|AddEventListenerOptions): void;
   addEventListener(type: string, listener: EventListenerOrEventListenerObject|null, options?: boolean|AddEventListenerOptions|undefined): void;
   addEventListener(type: any, listener: any, options?: any): void {
     this.#target.addEventListener(type, listener, options);
-    if (type === 'message' && isReceiver(listener)) {
-      this.#messageHandlers.set(listener as any, { once: options?.once === true });
-      globalNonGCedPorts.add(this);
+    if (isReceiver(listener)) {
+      if (type === 'message') {
+        this.#messageHandlers.set(listener as any, { once: options?.once === true });
+        globalNonGCedPorts.add(this);
+      }
+      if (type === 'error') this.#nrErrorHandlers++;
+      if (type === 'messageerror') this.#nrMessageErrorHandlers++;
     }
   }
 
@@ -523,11 +536,15 @@ export class WireMessagePort extends Uint8Array implements TypedEventTarget<Wire
   removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions | undefined): void;
   removeEventListener(type: any, listener: any, options?: any): void {
     this.#target.removeEventListener(type, listener, options);
-    if (type === 'message' && isReceiver(listener)) {
-      this.#messageHandlers.delete(listener as any);
-      if (this.#messageHandlers.size === 0) {
-        globalNonGCedPorts.delete(this);
+    if (isReceiver(listener)) {
+      if (type === 'message') {
+        this.#messageHandlers.delete(listener as any);
+        if (this.#messageHandlers.size === 0) {
+          globalNonGCedPorts.delete(this);
+        }
       }
+      if (type === 'error') this.#nrErrorHandlers--;
+      if (type === 'messageerror') this.#nrMessageErrorHandlers--;
     }
   }
 
@@ -562,7 +579,7 @@ function nativeToWrite(this: WireMessagePort, { data, ports}: MessageEvent) {
   this.postMessage(data, Array.from(portDict.values()));
 }
 
-export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
+export class WireEndpoint extends TypedEventTarget<WireMessagePortEventMap> {
   #writerClosed = false;
   #ownedPortsClosed = false;
   constructor(
@@ -590,7 +607,10 @@ export class WireEndpoint extends TypedEventTarget<WorkerEventMap> {
     _ownedPorts.set(writer, []);
 
     startReceiverLoop.call(this, readable).catch(error => {
-      this.dispatchEvent(new ErrorEvent('error', { error }));
+      if (!isAbortError(error)) {
+        this.dispatchEvent(new ErrorEvent('error', { error }));
+        // TODO: log error iff no error handler registered
+      }
     });
   }
 
