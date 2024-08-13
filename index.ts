@@ -1,6 +1,6 @@
 import { TypedEventListenerOrEventListenerObject, TypedEventTarget } from "@workers/typed-event-target";
 import { SerializerStream, DeserializerStream } from '@workers/v8-value-serializer';
-import { DefaultSerializer, DefaultDeserializer } from '@workers/node-serialization-api';
+import { DefaultSerializer, DefaultDeserializer } from '@workers/v8-value-serializer/v8';
 import { streamToAsyncIter } from 'whatwg-stream-to-async-iter'
 
 //#region Library functions
