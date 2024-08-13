@@ -682,7 +682,8 @@ class WireSerializer extends DefaultSerializer {
     if (object instanceof WireMessagePort) {
       this.writeUint32(kMessagePortTag); // tag
       const transferResult = serializeMemory.get(object);
-      transferResult && this.writeRawBytes(this.#serializeRaw(transferResult));
+      if (transferResult == null) throw new Error("AssertionError: Transfer result not found");
+      this.writeRawBytes(this.#serializeRaw(transferResult));
     } else {
       super._writeHostObject(object as ArrayBufferView);
     }
@@ -710,7 +711,8 @@ class WireDeserializer extends DefaultDeserializer {
     if (tag === kMessagePortTag) {
       const value = this.readValue() as TransferResult|null;
       const port = value && deserializeMemory.get(value[0]);
-      return port ?? null;
+      if (!port) throw new Error("AssertionError: Port not found");
+      return port;
     } else {
       this.#lastTag = tag;
       return super._readHostObject();
