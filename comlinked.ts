@@ -1,5 +1,5 @@
 import { WireEndpoint, WireMessagePort, WireMessageChannel } from './index'
-import * as Comlink from '../comlink/src/comlink';
+import * as Caplink from '../comlink/src/caplink';
 
 export * from './index'
 
@@ -8,10 +8,10 @@ export * from './index'
 // and then have "species" symbols that tells all internal methods to create these subclasses.
 // However, that would be a massive minefield and boilerplate bonanza, while prototype hacking just takes a few lines.
 // Performance be damned..
-(WireEndpoint.prototype as WireEndpoint & Comlink.Endpoint)[Comlink.messageChannel] = WireMessageChannel;
-(WireEndpoint.prototype as WireEndpoint & Comlink.Endpoint)[Comlink.adoptNative] = WireMessagePort.fromNative;
-(WireEndpoint.prototype as WireEndpoint & Comlink.Endpoint)[Comlink.toNative] = function() { throw new Error("WireEndpoint has no native equivalent.") };
+(WireEndpoint.prototype as WireEndpoint & Caplink.Endpoint)[Caplink.messageChannel] = WireMessageChannel;
+(WireEndpoint.prototype as WireEndpoint & Caplink.Endpoint)[Caplink.adoptNative] = WireMessagePort.fromNative;
+(WireEndpoint.prototype as WireEndpoint & Caplink.Endpoint)[Caplink.toNative] = function() { throw new Error("WireEndpoint has no native equivalent.") };
 
-(WireMessagePort.prototype as WireMessagePort & Comlink.Endpoint)[Comlink.messageChannel] = WireMessageChannel;
-(WireMessagePort.prototype as WireMessagePort & Comlink.Endpoint)[Comlink.adoptNative] = WireMessagePort.fromNative;
-(WireMessagePort.prototype as WireMessagePort & Comlink.Endpoint)[Comlink.toNative] = function() { return this.toNative() };
+(WireMessagePort.prototype as WireMessagePort & Caplink.Endpoint)[Caplink.messageChannel] = WireMessageChannel;
+(WireMessagePort.prototype as WireMessagePort & Caplink.Endpoint)[Caplink.adoptNative] = WireMessagePort.fromNative;
+(WireMessagePort.prototype as WireMessagePort & Caplink.Endpoint)[Caplink.toNative] = function() { return this.toNative() };
