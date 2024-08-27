@@ -1,5 +1,5 @@
 import { WireEndpoint, WireMessagePort, WireMessageChannel } from './index'
-import * as Caplink from '../comlink/src/caplink';
+import * as Caplink from '@workers/caplink';
 
 export * from './index'
 

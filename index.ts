@@ -1,5 +1,5 @@
 import { TypedEventListenerOrEventListenerObject, TypedEventTarget } from "@workers/typed-event-target";
-import { SerializerStream, DeserializerStream } from '@workers/v8-value-serializer';
+import { SerializerStream, DeserializerStream } from '@workers/v8-value-serializer/stream';
 import { DefaultSerializer, DefaultDeserializer } from '@workers/v8-value-serializer/v8';
 import { streamToAsyncIter } from 'whatwg-stream-to-async-iter'
 
