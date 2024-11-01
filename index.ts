@@ -65,6 +65,8 @@ export function isAbortError(error: unknown): error is Error {
   return error instanceof Error && error.name === "AbortError";
 }
 
+const closeWriter = (writer: RPCWriter) => writer.closing ??= writer.close();
+
 // const loggingFinalizer = new FinalizationRegistry((heldValue: any[]) => console.log('Finalizing...', ...heldValue));
 //#endregion
 
@@ -96,7 +98,7 @@ type RPCClose = [header: Header, type: MsgCode.Close,   destId: PortId, srcId: P
 
 type RPCMessage = RPCData | RPCClose | RPCAck;
 
-type RPCWriter = WritableStreamDefaultWriter<RPCMessage> & { identifier: any };
+type RPCWriter = WritableStreamDefaultWriter<RPCMessage> & { identifier: any, closing?: Promise<void> };
 
 const tagWriter = (writer: WritableStreamDefaultWriter<RPCMessage>, identifier: any): RPCWriter => Object.assign(writer, { identifier });
 
@@ -314,7 +316,7 @@ function serializeWithTransferResult(value: any, ports: WireMessagePort[]): Seri
 
       _detached.set(port, true);
       _remoteIdSetter(port, null);
-      _writer.get(port)!.close().catch(() => {}); // FIXME
+      closeWriter(_writer.get(port)!).catch(); // FIXME
 
       return [id, remoteId] as const;
     }) ?? [];
@@ -467,7 +469,7 @@ export class WireMessagePort extends DataView implements TypedEventTarget<WireMe
     _remoteIdSetter(this, null);
     this.#messageHandlers.clear();
     globalNonGCedPorts.delete(this);
-    this.#writer.close().catch(() => {}); // FIXME
+    closeWriter(this.#writer).catch(); // FIXME
   }
 
   postMessage(message: any, transfer?: Transferable[] | StructuredSerializeOptions): void {
@@ -639,7 +641,7 @@ export class WireEndpoint extends TypedEventTarget<WireMessagePortEventMap> {
         }
       }
 
-      this.#writer.close().catch(() => {});
+      closeWriter(this.#writer).catch();
     }
   }
 
