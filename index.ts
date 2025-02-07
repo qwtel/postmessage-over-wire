@@ -316,7 +316,7 @@ function serializeWithTransferResult(value: any, ports: WireMessagePort[]): Seri
 
       _detached.set(port, true);
       _remoteIdSetter(port, null);
-      closeWriter(_writer.get(port)!).catch(); // FIXME
+      closeWriter(_writer.get(port)!).catch(() => {}); // FIXME
 
       return [id, remoteId] as const;
     }) ?? [];
@@ -469,7 +469,7 @@ export class WireMessagePort extends DataView implements TypedEventTarget<WireMe
     _remoteIdSetter(this, null);
     this.#messageHandlers.clear();
     globalNonGCedPorts.delete(this);
-    closeWriter(this.#writer).catch(); // FIXME
+    closeWriter(this.#writer).catch(() => {}); // FIXME
   }
 
   postMessage(message: any, transfer?: Transferable[] | StructuredSerializeOptions): void {
@@ -641,7 +641,7 @@ export class WireEndpoint extends TypedEventTarget<WireMessagePortEventMap> {
         }
       }
 
-      closeWriter(this.#writer).catch();
+      closeWriter(this.#writer).catch(() => {});
     }
   }
 
