@@ -119,6 +119,7 @@ const unshippedStream = new TransformStream<RPCMessage, RPCMessage>();
 const unshippedWriter = tagWriter(unshippedStream.writable.getWriter(), '[Unshipped]');
 const unshippedPortLoop = { dispatchEvent() { throw Error("Unreachable") } } satisfies EndpointLike;
 _writer.set(unshippedPortLoop, unshippedWriter);
+_ownedPorts.set(unshippedWriter, []);
 startReceiverLoop.call(unshippedPortLoop, unshippedStream.readable);
 
 const kMessagePortConstructor = Symbol('MessagePortConstructor');
@@ -134,13 +135,15 @@ export class WireMessageChannel implements MessageChannel {
   }
 }
 
-export class WireMessageEvent<T = any> extends Event implements MessageEvent<T|null> {
+type IMessageEvent<T> = Omit<globalThis.MessageEvent<T>, 'prototype'>;
+
+export class WireMessageEvent<T = any> extends Event implements IMessageEvent<T|null> {
   readonly data: T|null;
   readonly ports: WireMessagePort[];
-  constructor(type: string, eventInitDict: Omit<MessageEventInit<T>, 'ports'> & { ports?: WireMessagePort[] }) {
+  constructor(type: string, eventInitDict?: Omit<MessageEventInit<T>, 'ports'> & { ports?: WireMessagePort[] }) {
     super(type, eventInitDict);
-    this.data = eventInitDict.data ?? null;
-    this.ports = eventInitDict.ports ?? [];
+    this.data = eventInitDict?.data ?? null;
+    this.ports = eventInitDict?.ports ?? [];
   }
   //#region Boilerplate
   readonly origin = '';
@@ -378,7 +381,7 @@ const globalNonGCedPorts = new Set<WireMessagePort>();
 const emptyBuffer = new ArrayBuffer(0);
 
 // HACK: Extending DataView as a workaround to allow custom host objects in Node's native V8 serializer API.
-export class WireMessagePort extends DataView implements TypedEventTarget<WireMessagePortEventMap>, MessagePort {
+export class WireMessagePort extends DataView<ArrayBuffer> implements TypedEventTarget<WireMessagePortEventMap>, MessagePort {
   #enabled?: Promise<void>
   #readable;
   #target;
