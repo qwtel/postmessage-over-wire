@@ -407,6 +407,9 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements TypedEvent
     if (remoteId) {
       const remoteWriter = globalRouteTable.get(remoteId);
       if (!remoteWriter) throw Error("AssertionError: Remote writer not found");
+      if (!_ownedPorts.has(remoteWriter)) {
+        _ownedPorts.set(remoteWriter, []);
+      }
       _ownedPorts.get(remoteWriter)!.push(this);
     }
 
