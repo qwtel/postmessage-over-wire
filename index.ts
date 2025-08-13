@@ -279,8 +279,14 @@ function postMessage(this: WireEndpoint|WireMessagePort, destId: PortId|null, sr
     throw new DOMException('Cannot transfer source port', 'DataCloneError');
   }
   const doomed = destId != null && ports.find(port => _id.get(port) === destId);
+  // Validate destination before attempting serialization/transfer side effects
+  if (destId == null) {
+    throw new DOMException('Port is not entangled', 'InvalidStateError');
+  }
+  if (doomed) {
+    throw new DOMException('Cannot transfer destination port', 'DataCloneError');
+  }
   const { serialized, transferResult } = serializeWithTransferResult(message, ports);
-  if (destId == null || doomed) return; // TODO: print warning?
 
   const writer = this instanceof WireEndpoint ? _writer.get(this)! : globalRouteTable.get(destId)!;
 
@@ -302,7 +308,12 @@ function postMessage(this: WireEndpoint|WireMessagePort, destId: PortId|null, sr
   // FIXME: What do when write fails??
   // UPDATE: When writing fails, the stream is errored and all future writes will fail as well. There is no recovering from this.
   // In that case, we actually have to send a message in other direction to clean up routing tables along the way and error the original sender.
-  writer.write([Header, MsgCode.Message, destId, srcId, transferResult, serialized]).catch(() => {});
+  writer.write([Header, MsgCode.Message, destId, srcId, transferResult, serialized]).catch((error) => {
+    // Surface transport errors to the sender
+    try {
+      this.dispatchEvent(new ErrorEvent('error', { error }));
+    } catch {}
+  });
 }
 
 // Temporary storage for deduplication
