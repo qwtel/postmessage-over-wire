@@ -311,7 +311,7 @@ function postMessage(this: WireEndpoint|WireMessagePort, destId: PortId|null, sr
   writer.write([Header, MsgCode.Message, destId, srcId, transferResult, serialized]).catch((error) => {
     // Surface transport errors to the sender
     try {
-      this.dispatchEvent(new ErrorEvent('error', { error }));
+      this.dispatchEvent(new WireMessageEvent('messageerror', { data: error }));
     } catch {}
   });
 }
