@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { WireMessageChannel } from "./index";
+import { WireMessageChannel } from "../index";
 import { closeAll, createTestContext, nextEvent, nextPortMessage } from "./test-util";
 
 describe("WireMessagePort", () => {

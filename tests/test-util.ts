@@ -1,4 +1,4 @@
-import { createWireContext, WireContext, WireEndpoint, WireMessagePort } from "./index";
+import { createWireContext, WireContext, WireEndpoint, WireMessagePort } from "../index";
 
 export type DuplexStream = {
   readable: ReadableStream<Uint8Array>;

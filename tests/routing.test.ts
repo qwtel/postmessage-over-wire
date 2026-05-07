@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { WireContext, WireEndpoint, WireMessageChannel } from "./index";
+import { WireContext, WireEndpoint, WireMessageChannel } from "../index";
 import {
   closeAll,
   createLinkedStreams,

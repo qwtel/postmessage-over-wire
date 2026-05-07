@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import * as wire from "./index";
+import * as wire from "../index";
 import { closeAll, createEndpointPair, createTestContext, nextMessage, nextPortMessage } from "./test-util";
 
 describe("postmessage-over-wire", () => {
