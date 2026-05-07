@@ -302,23 +302,22 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
         case MsgCode.Ack: {
           const [, , portId, sourceId, transferResult] = rpcMessage;
 
-          // XXX: Extremely sussy. What if the sourceId is the DefaultAddress??
-          if (routeTable.has(portId)) {
-            const writer = routeTable.get(portId)!;
-            const backwardWriter = routeTable.get(sourceId);
+          const writer = routeTable.get(portId);
+          const backwardWriter = sourceId === DefaultPortId ? _writer.get(this) : routeTable.get(sourceId);
 
-            for (const [id, remoteId] of transferResult) {
-              // If we've previously sent the other side of the port in the same direction as this acknowledgement is coming from,
-              // it is now closer to the remote port than we are, and we can delete it from our routing table.
-              if (remoteId && routeTable.get(remoteId) === backwardWriter) {
-                routeTable.delete(remoteId);
-                // If the port we've just transferred also points that direction, we can delete it from our routing table as well. XXX: Chat, is this real?
-                if (routeTable.get(id) === backwardWriter) {
-                  routeTable.delete(id);
-                }
+          for (const [id, remoteId] of transferResult) {
+            // If we've previously sent the other side of the port in the same direction as this acknowledgement is coming from,
+            // it is now closer to the remote port than we are, and we can delete it from our routing table.
+            if (remoteId && routeTable.get(remoteId) === backwardWriter) {
+              routeTable.delete(remoteId);
+              // If the port we've just transferred also points that direction, we can delete it from our routing table as well. XXX: Chat, is this real?
+              if (routeTable.get(id) === backwardWriter) {
+                routeTable.delete(id);
               }
             }
+          }
 
+          if (writer) {
             // Forwarding the Ack message
             scheduleWrite(writer, rpcMessage).catch(() => {});
           }
