@@ -65,7 +65,24 @@ export function isAbortError(error: unknown): error is Error {
   return error instanceof Error && error.name === "AbortError";
 }
 
-const closeWriter = (writer: RPCWriter) => writer.closing ??= writer.close();
+const Resolved = Promise.resolve();
+
+
+const closeWriter = (writer: RPCWriter) => writer.closing ??=
+  (writer.writeQueue ?? Resolved).then(() => writer.close());
+
+async function scheduleWrite(writer: RPCWriter, chunk: RPCMessage): Promise<void> {
+  const write = (writer.writeQueue ?? Resolved).then(async () => {
+    await writer.ready;
+    await writer.write(chunk);
+  });
+  writer.writeQueue = write.catch(() => {});
+  await write;
+}
+
+async function scheduleWriteOpt(writer: RPCWriter|undefined, chunk: RPCMessage): Promise<void> {
+  if (writer) await scheduleWrite(writer, chunk);
+}
 
 // const loggingFinalizer = new FinalizationRegistry((heldValue: any[]) => console.log('Finalizing...', ...heldValue));
 //#endregion
@@ -98,7 +115,7 @@ type RPCClose = [header: Header, type: MsgCode.Close,   destId: PortId, srcId: P
 
 type RPCMessage = RPCData | RPCClose | RPCAck;
 
-type RPCWriter = WritableStreamDefaultWriter<RPCMessage> & { identifier: any, closing?: Promise<void> };
+type RPCWriter = WritableStreamDefaultWriter<RPCMessage> & { identifier: any, closing?: Promise<void>, writeQueue?: Promise<void> };
 
 const tagWriter = (writer: WritableStreamDefaultWriter<RPCMessage>, identifier: any): RPCWriter => Object.assign(writer, { identifier });
 
@@ -115,7 +132,15 @@ const _shipped = new WeakMap<RPCWriter, boolean>();
 const _ownedPorts = new WeakMap<RPCWriter, WireMessagePort[]>();
 
 // FIXME: Must the unshipped event loop be a super global as well?
-const unshippedStream = new TransformStream<RPCMessage, RPCMessage>();
+const unshippedStream = new TransformStream<RPCMessage, RPCMessage>(
+  {
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+    },
+  },
+  { highWaterMark: 1 },
+  { highWaterMark: 1 },
+);
 const unshippedWriter = tagWriter(unshippedStream.writable.getWriter(), '[Unshipped]');
 const unshippedPortLoop = { dispatchEvent() { throw Error("Unreachable") } } satisfies EndpointLike;
 _writer.set(unshippedPortLoop, unshippedWriter);
@@ -163,7 +188,7 @@ function acknowledgeTransfer(this: EndpointLike, destId: PortId, srcId: PortId, 
     // We attach a copy of the transfer results and the original port id, s.t. intermediate nodes can potentially clean up their routing tables.
     // This happens when a port was sent in the direction it came from. Note that we can only clean up routing tables after receiving Ack,
     // since in-flight messages from the other side could still arrive and need to be forwarded (returned) to avoid loss of messages.
-    writer.write([Header, MsgCode.Ack, destId, srcId, transferResult, null]).catch(() => {});
+    scheduleWrite(writer, [Header, MsgCode.Ack, destId, srcId, transferResult, null]).catch(() => {});
   }
 }
 
@@ -212,7 +237,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
               globalRouteTable.set(id, writer);
             }
 
-            writer.write(rpcMessage).catch(() => {});
+            scheduleWrite(writer, rpcMessage).catch(() => {});
           }
           // Note: Messages can get dropped here if a close message is traveling the other direction, which is fine.
           break;
@@ -238,7 +263,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
             }
 
             // Forwarding the Ack message
-            writer.write(rpcMessage).catch(() => {});
+            scheduleWrite(writer, rpcMessage).catch(() => {});
           }
 
           break;
@@ -254,7 +279,7 @@ async function startReceiverLoop(this: EndpointLike, readable: ReadableStream<RP
           initPortId && globalRouteTable.delete(initPortId);
 
           // Forward the close message if we haven't reached the destination yet
-          writer?.write(rpcMessage).catch(() => {});
+          scheduleWriteOpt(writer, rpcMessage).catch(() => {});
 
           break;
         }
@@ -308,7 +333,7 @@ function postMessage(this: WireEndpoint|WireMessagePort, destId: PortId|null, sr
   // FIXME: What do when write fails??
   // UPDATE: When writing fails, the stream is errored and all future writes will fail as well. There is no recovering from this.
   // In that case, we actually have to send a message in other direction to clean up routing tables along the way and error the original sender.
-  writer.write([Header, MsgCode.Message, destId, srcId, transferResult, serialized]).catch((error) => {
+  scheduleWrite(writer, [Header, MsgCode.Message, destId, srcId, transferResult, serialized]).catch((error) => {
     // Surface transport errors to the sender
     try {
       this.dispatchEvent(new WireMessageEvent('messageerror', { data: error }));
@@ -362,7 +387,7 @@ function deserializeWithTransfer(value: SerializedWithTransferResult): [any, Wir
 function finalizeMessagePort([id, remoteId]: TransferResult) {
   if (remoteId) {
     // TODO: what do when write fails?
-    globalRouteTable.get(remoteId)?.write([Header, MsgCode.Close, remoteId, id, null, null]).catch(() => {})
+    scheduleWriteOpt(globalRouteTable.get(remoteId), [Header, MsgCode.Close, remoteId, id, null, null]).catch(() => {});
     globalRouteTable.delete(remoteId); // ensure close op isn't sent twice
   }
   globalRouteTable.delete(id);
@@ -409,7 +434,15 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements TypedEvent
     _id.set(this, id);
     _remoteIdSetter(this, remoteId ?? null);
 
-    const { readable, writable } = new TransformStream<RPCMessage, RPCMessage>();
+    const { readable, writable } = new TransformStream<RPCMessage, RPCMessage>(
+      {
+        transform(chunk, controller) {
+          controller.enqueue(chunk);
+        },
+      },
+      { highWaterMark: 1 },
+      { highWaterMark: 1 },
+    );
     this.#readable = readable;
     const writer = tagWriter(writable.getWriter(), id);
     _writer.set(this, writer);
@@ -653,7 +686,7 @@ export class WireEndpoint extends TypedEventTarget<WireMessagePortEventMap> {
       // If a port is referencing us as a gateway, we have to forcefully close the port:
       for (const [portId, writer] of globalRouteTable) {
         if (writer === this.#writer) {
-          this.#writer.write([Header, MsgCode.Close, portId, null, null, null]).catch(() => {}); // nothing left to do in case of failure
+          scheduleWrite(this.#writer, [Header, MsgCode.Close, portId, null, null, null]).catch(() => {}); // nothing left to do in case of failure
           globalRouteTable.delete(portId);
         }
       }
