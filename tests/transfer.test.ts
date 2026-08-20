@@ -6,7 +6,7 @@ import { WireMessageChannel } from "../index";
 import {
   closeAll,
   createEndpointPair,
-  createTestContext,
+  createTestRouter,
   nextEvent,
   nextMessage,
   nextMessages,
@@ -18,9 +18,9 @@ import {
 
 describe("moving MessagePort endpoints", () => {
   it("keeps messages sent before and after a local transfer in FIFO order", async () => {
-    const context = createTestContext("local-order");
-    const carrier = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("local-order");
+    const carrier = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
 
     carrier.port2.addEventListener("messageerror", () => {});
     payload.port1.addEventListener("messageerror", () => {});
@@ -43,9 +43,9 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("moves a queued inbox over a wire link", async () => {
-    const contextA = createTestContext("remote-queue-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("remote-queue-b"));
-    const payload = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("remote-queue-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("remote-queue-b"));
+    const payload = new WireMessageChannel(routerA);
 
     let moved: MessagePort|undefined;
     try {
@@ -61,9 +61,9 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("routes messages sent immediately after an outbound transfer", async () => {
-    const contextA = createTestContext("remote-race-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("remote-race-b"));
-    const payload = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("remote-race-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("remote-race-b"));
+    const payload = new WireMessageChannel(routerA);
     const transfer = nextMessage(endpointB);
 
     endpointA.postMessage("move", [payload.port1]);
@@ -75,9 +75,9 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("preserves the transfer frame before later endpoint messages", async () => {
-    const contextA = createTestContext("carrier-order-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("carrier-order-b"));
-    const payload = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("carrier-order-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("carrier-order-b"));
+    const payload = new WireMessageChannel(routerA);
     const received = nextMessages(endpointB, 2);
 
     endpointA.postMessage("with port", [payload.port1]);
@@ -91,10 +91,10 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("moves two independent ports in one message and preserves transfer-list order", async () => {
-    const contextA = createTestContext("two-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("two-b"));
-    const first = new WireMessageChannel(contextA);
-    const second = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("two-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("two-b"));
+    const first = new WireMessageChannel(routerA);
+    const second = new WireMessageChannel(routerA);
     const transfer = nextMessage(endpointB);
 
     endpointA.postMessage("two", [first.port1, second.port1]);
@@ -110,11 +110,11 @@ describe("moving MessagePort endpoints", () => {
     closeAll(first.port2, second.port2, ...event.ports, endpointA, endpointB);
   });
 
-  it("can move both ends of one channel to the same remote context", async () => {
-    const contextA = createTestContext("pair-a");
-    const contextB = createTestContext("pair-b");
-    const [endpointA, endpointB] = createEndpointPair(contextA, contextB);
-    const pair = new WireMessageChannel(contextA);
+  it("can move both ends of one channel to the same remote router", async () => {
+    const routerA = createTestRouter("pair-a");
+    const routerB = createTestRouter("pair-b");
+    const [endpointA, endpointB] = createEndpointPair(routerA, routerB);
+    const pair = new WireMessageChannel(routerA);
     const transfer = nextMessage(endpointB);
 
     endpointA.postMessage("whole channel", [pair.port1, pair.port2]);
@@ -131,10 +131,10 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("can return a port to its origin repeatedly", async () => {
-    const contextA = createTestContext("bounce-a");
-    const contextB = createTestContext("bounce-b");
-    const [endpointA, endpointB] = createEndpointPair(contextA, contextB);
-    const payload = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("bounce-a");
+    const routerB = createTestRouter("bounce-b");
+    const [endpointA, endpointB] = createEndpointPair(routerA, routerB);
+    const payload = new WireMessageChannel(routerA);
 
     let atB = nextMessage(endpointB);
     endpointA.postMessage("out one", [payload.port1]);
@@ -159,10 +159,10 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("can transfer another port through an endpoint that is itself in flight", async () => {
-    const contextA = createTestContext("nested-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("nested-b"));
-    const carrier = new WireMessageChannel(contextA);
-    const nested = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("nested-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("nested-b"));
+    const carrier = new WireMessageChannel(routerA);
+    const nested = new WireMessageChannel(routerA);
     const movedCarrierEvent = nextMessage(endpointB);
 
     endpointA.postMessage("move carrier", [carrier.port1]);
@@ -179,9 +179,9 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("delivers close sent immediately after a remote transfer", async () => {
-    const contextA = createTestContext("remote-close-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("remote-close-b"));
-    const payload = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("remote-close-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("remote-close-b"));
+    const payload = new WireMessageChannel(routerA);
     const transfer = nextMessage(endpointB);
 
     endpointA.postMessage("move then close", [payload.port1]);
@@ -195,9 +195,9 @@ describe("moving MessagePort endpoints", () => {
   });
 
   it("does not dispatch queued messages on the detached wrapper", async () => {
-    const contextA = createTestContext("detached-events-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("detached-events-b"));
-    const payload = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("detached-events-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("detached-events-b"));
+    const payload = new WireMessageChannel(routerA);
     let oldWrapperEvents = 0;
     let moved: MessagePort|undefined;
     try {
@@ -219,9 +219,9 @@ describe("moving MessagePort endpoints", () => {
   it("does not lose close while a local transfer event is pending", async () => {
     // Closing the peer currently deletes the pending route before the receiving
     // wrapper is installed, so the close event is lost.
-    const context = createTestContext("local-close-race");
-    const carrier = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("local-close-race");
+    const carrier = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
     carrier.port2.addEventListener("messageerror", () => {});
     const transfer = nextPortMessage(carrier.port2);
 

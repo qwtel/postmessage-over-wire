@@ -1,4 +1,6 @@
-import { createWireContext, WireContext, WireEndpoint } from "../index";
+import { _internals, WireEndpoint } from "../index";
+
+export type TestRouter = ReturnType<typeof _internals.createRouter>;
 
 export type DuplexStream = {
   readable: ReadableStream<Uint8Array>;
@@ -40,9 +42,11 @@ export function generateIds(prefix: string) {
   return () => `${prefix}-${++next}`;
 }
 
-export function createTestContext(prefix: string): WireContext {
-  return createWireContext({ generateId: generateIds(prefix), finalizer: null });
+export function createTestRouter(prefix: string): TestRouter {
+  return _internals.createRouter({ generateId: generateIds(prefix) });
 }
+
+export const routeCount = _internals.routeCount;
 
 export function nextEvent<T extends Event>(target: EventTarget, type: string): Promise<T> {
   return new Promise((resolve) => {
@@ -85,13 +89,13 @@ export function nextPortMessages(port: MessagePort, count: number): Promise<Mess
 }
 
 export function createEndpointPair(
-  leftContext = createTestContext("left"),
-  rightContext = createTestContext("right"),
+  leftRouter = createTestRouter("left"),
+  rightRouter = createTestRouter("right"),
 ): [WireEndpoint, WireEndpoint] {
   const [left, right] = createLinkedStreams();
   return [
-    new WireEndpoint(left, "left", leftContext),
-    new WireEndpoint(right, "right", rightContext),
+    new WireEndpoint(left, "left", leftRouter),
+    new WireEndpoint(right, "right", rightRouter),
   ];
 }
 

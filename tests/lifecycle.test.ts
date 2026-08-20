@@ -4,14 +4,14 @@ setDefaultTimeout(50);
 
 import * as Caplink from "../../comlink/src/caplink";
 import { WireEndpoint, WireMessageChannel, WireMessagePort } from "../index";
-import { closeAll, createEndpointPair, createLinkedStreams, createTestContext, nextEvent, nextMessage, settle, timeout } from "./test-util";
+import { closeAll, createEndpointPair, createLinkedStreams, createTestRouter, nextEvent, nextMessage, routeCount, settle, timeout } from "./test-util";
 
 const syntheticClose = (target: EventTarget) => target.dispatchEvent(new Event("close"));
 
 describe("deterministic lifetime management", () => {
   it("supports using to close a port and release both local routes", async () => {
-    const context = createTestContext("using-port");
-    const channel = new WireMessageChannel(context);
+    const router = createTestRouter("using-port");
+    const channel = new WireMessageChannel(router);
     const closed = nextEvent<CloseEvent>(channel.port2, "close");
     channel.port2.start();
 
@@ -21,15 +21,15 @@ describe("deterministic lifetime management", () => {
     }
 
     expect((await timeout(closed)).wasClean).toBe(true);
-    expect(context.routeTable.size).toBe(0);
+    expect(routeCount(router)).toBe(0);
     closeAll(channel.port2);
   });
 
   it("supports using to disconnect a link and break every dependent port", async () => {
-    const leftContext = createTestContext("using-link-left");
-    const rightContext = createTestContext("using-link-right");
-    const [left, right] = createEndpointPair(leftContext, rightContext);
-    const channel = new WireMessageChannel(leftContext);
+    const leftRouter = createTestRouter("using-link-left");
+    const rightRouter = createTestRouter("using-link-right");
+    const [left, right] = createEndpointPair(leftRouter, rightRouter);
+    const channel = new WireMessageChannel(leftRouter);
     const transferred = nextMessage(right);
     left.postMessage("move", [channel.port1]);
     const moved = (await transferred).ports[0];
@@ -44,13 +44,13 @@ describe("deterministic lifetime management", () => {
     }
 
     await timeout(Promise.all([localClosed, remoteClosed]));
-    expect(leftContext.routeTable.size).toBe(0);
-    expect(rightContext.routeTable.size).toBe(0);
+    expect(routeCount(leftRouter)).toBe(0);
+    expect(routeCount(rightRouter)).toBe(0);
     closeAll(channel.port2, moved, right);
   });
 
   it("dispatches exactly one clean close event when using disposes a WireEndpoint", async () => {
-    const endpoint = new WireEndpoint({ readable: new ReadableStream<Uint8Array>(), writable: new WritableStream<Uint8Array>() }, "using-close", createTestContext("using-close"));
+    const endpoint = new WireEndpoint({ readable: new ReadableStream<Uint8Array>(), writable: new WritableStream<Uint8Array>() }, "using-close", createTestRouter("using-close"));
     const closes: CloseEvent[] = [];
     const closed = nextEvent<CloseEvent>(endpoint, "close");
     endpoint.addEventListener("close", (event) => closes.push(event));
@@ -74,7 +74,7 @@ describe("deterministic lifetime management", () => {
     const endpoint = new WireEndpoint({
       readable: new ReadableStream<Uint8Array>({ start(controller) { finish = () => controller.close(); } }),
       writable: new WritableStream<Uint8Array>(),
-    }, "readable-eof", createTestContext("readable-eof"));
+    }, "readable-eof", createTestRouter("readable-eof"));
     const closed = nextEvent<CloseEvent>(endpoint, "close");
 
     try {
@@ -90,7 +90,7 @@ describe("deterministic lifetime management", () => {
     const endpoint = new WireEndpoint({
       readable: new ReadableStream<Uint8Array>({ start(controller) { abort = () => controller.error(new DOMException("aborted", "AbortError")); } }),
       writable: new WritableStream<Uint8Array>(),
-    }, "readable-abort", createTestContext("readable-abort"));
+    }, "readable-abort", createTestRouter("readable-abort"));
     const closed = nextEvent<CloseEvent>(endpoint, "close");
     let errors = 0;
     endpoint.addEventListener("error", () => errors++);
@@ -109,7 +109,7 @@ describe("deterministic lifetime management", () => {
     const endpoint = new WireEndpoint({
       readable: new ReadableStream<Uint8Array>(),
       writable: new WritableStream<Uint8Array>({ write() { throw failure; } }),
-    }, "writer-failure", createTestContext("writer-failure"));
+    }, "writer-failure", createTestRouter("writer-failure"));
     const errored = nextEvent<ErrorEvent>(endpoint, "error");
     const closed = nextEvent<CloseEvent>(endpoint, "close");
 
@@ -136,8 +136,8 @@ describe("deterministic lifetime management", () => {
         },
         abort(reason) { return leftWriter.abort(reason); },
       }),
-    }, "closing-reader-left", createTestContext("closing-reader-left"));
-    const right = new WireEndpoint(rightStream, "closing-reader-right", createTestContext("closing-reader-right"));
+    }, "closing-reader-left", createTestRouter("closing-reader-left"));
+    const right = new WireEndpoint(rightStream, "closing-reader-right", createTestRouter("closing-reader-right"));
     const events: string[] = [];
     left.addEventListener("close", () => events.push("close"));
     left.addEventListener("message", ({ data }) => events.push(`message:${data}`));
@@ -202,9 +202,9 @@ describe("deterministic lifetime management", () => {
   });
 
   it("using a carrier port abandons transferred ports that were never delivered", async () => {
-    const context = createTestContext("abandoned-transfer");
-    const carrier = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("abandoned-transfer");
+    const carrier = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
     const payloadClosed = nextEvent<CloseEvent>(payload.port2, "close");
     payload.port2.start();
     carrier.port1.postMessage("queued transfer", [payload.port1]);
@@ -215,21 +215,21 @@ describe("deterministic lifetime management", () => {
         void receiver;
       }
       expect((await timeout(payloadClosed)).wasClean).toBe(true);
-      expect(context.routeTable.size).toBe(0);
+      expect(routeCount(router)).toBe(0);
     } finally {
       closeAll(carrier.port1, carrier.port2, payload.port1, payload.port2);
     }
   });
 
   it("abandons transferred ports when their carrier destination has closed", async () => {
-    const leftContext = createTestContext("closed-destination-left");
-    const rightContext = createTestContext("closed-destination-right");
-    const [left, right] = createEndpointPair(leftContext, rightContext);
-    const carrier = new WireMessageChannel(leftContext);
+    const leftRouter = createTestRouter("closed-destination-left");
+    const rightRouter = createTestRouter("closed-destination-right");
+    const [left, right] = createEndpointPair(leftRouter, rightRouter);
+    const carrier = new WireMessageChannel(leftRouter);
     const carrierMoved = nextMessage(right);
     left.postMessage("carrier", [carrier.port1]);
     const moved = (await carrierMoved).ports[0];
-    const payload = new WireMessageChannel(leftContext);
+    const payload = new WireMessageChannel(leftRouter);
     const payloadClosed = nextEvent<CloseEvent>(payload.port2, "close");
     payload.port2.start();
 
@@ -239,8 +239,8 @@ describe("deterministic lifetime management", () => {
 
       expect((await timeout(payloadClosed)).wasClean).toBe(true);
       await settle();
-      expect(leftContext.routeTable.size).toBe(0);
-      expect(rightContext.routeTable.size).toBe(0);
+      expect(routeCount(leftRouter)).toBe(0);
+      expect(routeCount(rightRouter)).toBe(0);
     } finally {
       closeAll(carrier.port1, carrier.port2, payload.port1, payload.port2, moved, left, right);
     }
@@ -270,7 +270,7 @@ describe("deterministic lifetime management", () => {
       }
     }
     const native = new ObservedNativePort();
-    const wire = WireMessagePort.fromNative(native as unknown as MessagePort, createTestContext("native-disposal"));
+    const wire = WireMessagePort.fromNative(native as unknown as MessagePort, createTestRouter("native-disposal"));
 
     try {
       {
@@ -303,7 +303,7 @@ describe("deterministic lifetime management", () => {
       }
     }
     Object.defineProperty(globalThis, "MessageChannel", { configurable: true, writable: true, value: ObservedMessageChannel });
-    const channel = new WireMessageChannel(createTestContext("native-facade-disposal"));
+    const channel = new WireMessageChannel(createTestRouter("native-facade-disposal"));
     const native = channel.port1.toNative();
     Object.defineProperty(globalThis, "MessageChannel", { configurable: true, writable: true, value: NativeMessageChannel });
     const nativeClose = native.close.bind(native);

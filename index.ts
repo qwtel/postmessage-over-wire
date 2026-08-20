@@ -3,11 +3,11 @@
  *
  * `WireMessageChannel` creates an entangled pair of `WireMessagePort`s.
  * `WireMessagePort` implements the `MessagePort` API and is transferable.
- * `WireEndpoint` attaches a `WireContext` to one full-duplex transport link;
+ * `WireEndpoint` attaches the local router to one full-duplex transport link;
  * unlike a port, the endpoint is a carrier and has no routed address.
  *
  * ```text
- * context L                    transport                    context R
+ * router L                     transport                     router R
  *
  * ports + routes   <── WireEndpoint ═════════ WireEndpoint ──> ports + routes
  *                         writable  ──────>  readable
@@ -22,16 +22,16 @@
  * ## Routing
  *
  * Every port end has a stable address and the address of its entangled peer.
- * A context maps each known address to exactly one next hop:
+ * A router maps each known address to exactly one next hop:
  *
  * ```text
  * address ── local ──> port state { peer, inbox, owner }
- * address ── link  ──> another context through a WireEndpoint
+ * address ── link  ──> another router through a WireEndpoint
  * ```
  *
  * Posting on A looks up A's peer address B and follows B's route. Intermediate
- * contexts perform the same lookup, so a moved port can be reached through any
- * number of forwarding contexts.
+ * routers perform the same lookup, so a moved port can be reached through any
+ * number of forwarding routers.
  *
  * ```text
  * state A --peer B--> [B: link 0->1] --> [B: link 1->2] --> [B: local state B]
@@ -40,7 +40,7 @@
  *
  * The default address generator returns a cryptographically random 128-bit
  * bigint. A custom `generateId` may be supplied; its values must be unique
- * across every context that can exchange routes. Addresses are opaque protocol
+ * across every router that can exchange routes. Addresses are opaque protocol
  * labels. The transferable `WireMessagePort` object is the public capability.
  *
  * ## Moving a port
@@ -60,7 +60,7 @@
  * ```text
  * before moving B                 after B arrives
  *
- * context L                       context L          context R
+ * router L                        router L           router R
  * A ──local──> state A            A ──local──> A     A ──link──> L
  * B ──local──> state B            B ──link───> R     B ──local─> state B
  *
@@ -184,26 +184,21 @@ type Route = LocalRoute | LinkRoute;
 
 type PendingMove = { back: Link | null; forward: Link; ports: HeldPort[] };
 
-const kPending = Symbol("pendingMoves");
-
-export type WireContext = {
-  routeTable: Map<PortId, unknown>;
-  generateId(): PortId;
-  finalizer?: FinalizationRegistry<HeldPort> | null;
-};
-
-type InternalContext = WireContext & {
+type Router = {
+  routes: Map<PortId, Route>;
   retainedPorts: Set<WireMessagePort>;
-  [kPending]: Map<string, PendingMove>;
+  pendingMoves: Map<string, PendingMove>;
+  generateId(): PortId;
+  finalizer: FinalizationRegistry<HeldPort> | null;
 };
 
 type PortState = {
-  context: WireContext; id: PortId; peer: PortId; inbox: LocalEnvelope[];
+  router: Router; id: PortId; peer: PortId; inbox: LocalEnvelope[];
   owner: WeakRef<WireMessagePort> | null; scheduled: boolean; closed: boolean;
 };
 
 type Link = {
-  context: WireContext; endpoint: WireEndpoint; reader: ReadableStreamDefaultReader<Uint8Array>;
+  router: Router; endpoint: WireEndpoint; reader: ReadableStreamDefaultReader<Uint8Array>;
   writer: WritableStreamDefaultWriter<Uint8Array>; writes: Promise<void>;
   status: "open" | "closing" | "closed"; writerDone?: Promise<void>;
 };
@@ -217,15 +212,8 @@ const kDetach = Symbol("detach");
 const kSchedule = Symbol("schedule");
 const kDispose: typeof Symbol.dispose = ((Symbol as any).dispose ?? Symbol.for("Symbol.dispose")) as typeof Symbol.dispose;
 
-/** @internal Used by adapters that must create ports in an existing routing context. */
-export const kContext = Symbol("context");
-
 const replacementTag = 77;
 const globalRoutes = Symbol.for("postmessage-over-wire.routes.v2");
-
-const routes = (context: WireContext) => context.routeTable as Map<PortId, Route>;
-const pendingMoves = (context: WireContext) => (context as InternalContext)[kPending];
-const retainedPorts = (context: WireContext) => (context as InternalContext).retainedPorts;
 const ownerOf = (state: PortState) => state.owner?.deref();
 const dataCloneError = (message: string) => new DOMException(message, "DataCloneError");
 const invalidStateError = (message: string) => new DOMException(message, "InvalidStateError");
@@ -239,28 +227,34 @@ function randomId(): bigint {
 
 const moveId = () => crypto.randomUUID?.() ?? randomId().toString(16);
 
-export function createWireContext(options: {
-  routeTable?: Map<PortId, unknown>;
+function createRouter(options: {
+  routes?: Map<PortId, Route>;
   generateId?: () => PortId;
-  finalizer?: FinalizationRegistry<HeldPort> | null;
-} = {}): WireContext {
-  const context: InternalContext = {
-    routeTable: options.routeTable ?? new Map(),
+} = {}): Router {
+  const router: Router = {
+    routes: options.routes ?? new Map(),
     retainedPorts: new Set<WireMessagePort>(),
+    pendingMoves: new Map<string, PendingMove>(),
     generateId: options.generateId ?? randomId,
     finalizer: null,
-    [kPending]: new Map<string, PendingMove>(),
   };
 
-  context.finalizer = options.finalizer === undefined && typeof FinalizationRegistry === "function"
-    ? new FinalizationRegistry<HeldPort>((held) => closeAddress(context, held[/* .id */ 0], held[/* .peer */ 1], true))
-    : options.finalizer ?? null;
-  return context;
+  router.finalizer = typeof FinalizationRegistry === "function"
+    ? new FinalizationRegistry<HeldPort>((held) => closeAddress(router, held[/* .id */ 0], held[/* .peer */ 1], true))
+    : null;
+  return router;
 }
 
-const defaultContext = createWireContext({
-  routeTable: ((globalThis as any)[globalRoutes] ??= new Map()),
+const defaultRouter = createRouter({
+  routes: ((globalThis as any)[globalRoutes] ??= new Map()),
 });
+
+/** Test support for simulating independent routing nodes in one JavaScript realm. */
+export const _internals = {
+  createRouter: (options: { generateId?: () => PortId } = {}) => createRouter(options),
+  routeCount: (router: Router) => router.routes.size,
+  routeIds: (router: Router) => [...router.routes.keys()],
+};
 
 class PayloadSerializer extends DefaultSerializer {
   constructor(private readonly replacements: Map<object, number>) { super(); }
@@ -480,9 +474,9 @@ export class WireMessageEvent<T = any> extends Event implements MessageEventShap
   }
 }
 
-function localState(context: WireContext, id: PortId, peer: PortId, inbox: LocalEnvelope[] = []): PortState {
-  const state: PortState = { context, id, peer, inbox, owner: null, scheduled: false, closed: inbox.some(([type]) => type === "close") };
-  routes(context).set(id, { type: "local", port: state, peer });
+function localState(router: Router, id: PortId, peer: PortId, inbox: LocalEnvelope[] = []): PortState {
+  const state: PortState = { router, id, peer, inbox, owner: null, scheduled: false, closed: inbox.some(([type]) => type === "close") };
+  router.routes.set(id, { type: "local", port: state, peer });
   return state;
 }
 
@@ -507,36 +501,36 @@ function ship(state: PortState, link: Link): ShippedPort {
     ? envelope
     : ["message", /* data: */ envelope[1], /* ports: */ envelope[2].map((port) => ship(port, link))]);
   state.inbox.length = 0;
-  routes(state.context).set(state.id, { type: "link", link, peer: state.peer });
+  state.router.routes.set(state.id, { type: "link", link, peer: state.peer });
   return [/* id: */ state.id, /* peer: */ state.peer, /* inbox: */ inbox];
 }
 
-function pointShipped(context: WireContext, ports: ShippedPort[], link: Link): void {
+function pointShipped(router: Router, ports: ShippedPort[], link: Link): void {
   for (const [id, peer, inbox] of ports) {
-    routes(context).set(id, { type: "link", link, peer });
-    for (const envelope of inbox) if (envelope[0] === "message") pointShipped(context, envelope[/* .ports */ 2], link);
+    router.routes.set(id, { type: "link", link, peer });
+    for (const envelope of inbox) if (envelope[0] === "message") pointShipped(router, envelope[/* .ports */ 2], link);
   }
 }
 
-function learnPeers(context: WireContext, ports: ShippedPort[], incoming: Link): void {
+function learnPeers(router: Router, ports: ShippedPort[], incoming: Link): void {
   for (const [id, peer, inbox] of ports) {
-    if (!routes(context).has(peer)) routes(context).set(peer, { type: "link", link: incoming, peer: id });
-    for (const envelope of inbox) if (envelope[0] === "message") learnPeers(context, envelope[/* .ports */ 2], incoming);
+    if (!router.routes.has(peer)) router.routes.set(peer, { type: "link", link: incoming, peer: id });
+    for (const envelope of inbox) if (envelope[0] === "message") learnPeers(router, envelope[/* .ports */ 2], incoming);
   }
 }
 
-function importShipped(context: WireContext, port: ShippedPort, incoming: Link): PortState {
+function importShipped(router: Router, port: ShippedPort, incoming: Link): PortState {
   const [id, peer, shippedInbox] = port;
   const inbox = shippedInbox.map<LocalEnvelope>((envelope) => envelope[0] === "close"
     ? envelope
-    : ["message", /* data: */ envelope[1], /* ports: */ envelope[2].map((nested) => importShipped(context, nested, incoming))]);
-  return localState(context, id, peer, inbox);
+    : ["message", /* data: */ envelope[1], /* ports: */ envelope[2].map((nested) => importShipped(router, nested, incoming))]);
+  return localState(router, id, peer, inbox);
 }
 
 const transferList = (value?: Transferable[] | StructuredSerializeOptions) => Array.isArray(value) ? value : value?.transfer ?? [];
 
 function prepareMessage(
-  context: WireContext,
+  router: Router,
   source: PortId | null,
   destination: PortId | null,
   destinationRoute: Route,
@@ -551,7 +545,7 @@ function prepareMessage(
   for (const item of items) {
     if (item instanceof WireMessagePort) {
       const state = item[kState]();
-      if (!item.transferable || state.context !== context || state.closed || ownerOf(state) !== item) {
+      if (!item.transferable || state.router !== router || state.closed || ownerOf(state) !== item) {
         throw dataCloneError("Cannot transfer this MessagePort");
       }
       if (state.id === source) throw dataCloneError("Cannot transfer source port");
@@ -572,14 +566,14 @@ function prepareMessage(
   return { data, local: [], shipped: states.map((state) => ship(state, destinationRoute.link)) };
 }
 
-function registerMove(context: WireContext, back: Link | null, forward: Link, frame: MessageFrame): void {
+function registerMove(router: Router, back: Link | null, forward: Link, frame: MessageFrame): void {
   const [, , , ports, move] = frame;
   if (!move) return;
-  pendingMoves(context).set(move, { back, forward, ports: shippedPairs(ports) });
+  router.pendingMoves.set(move, { back, forward, ports: shippedPairs(ports) });
 }
 
-function pruneMove(context: WireContext, move: PendingMove): void {
-  const table = routes(context);
+function pruneMove(router: Router, move: PendingMove): void {
+  const table = router.routes;
   for (const [id, peer] of move.ports) {
     const route = table.get(id);
     const peerRoute = table.get(peer);
@@ -595,15 +589,15 @@ function acknowledge(link: Link, move: string | null): void {
 }
 
 function handleMoved(link: Link, token: string): void {
-  const pending = pendingMoves(link.context).get(token);
+  const pending = link.router.pendingMoves.get(token);
   if (!pending || pending.forward !== link) return;
-  pendingMoves(link.context).delete(token);
+  link.router.pendingMoves.delete(token);
   const forwarded = pending.back ? writeFrame(pending.back, ["moved", /* move: */ token]) : Promise.resolve();
-  void forwarded.then(() => pruneMove(link.context, pending)).catch(() => {});
+  void forwarded.then(() => pruneMove(link.router, pending)).catch(() => {});
 }
 
 function sendPrepared(
-  context: WireContext,
+  router: Router,
   destination: PortId | null,
   route: Route,
   prepared: ReturnType<typeof prepareMessage>,
@@ -616,16 +610,16 @@ function sendPrepared(
 
   const token = prepared.shipped.length ? moveId() : null;
   const frame: MessageFrame = ["message", /* to: */ destination, /* data: */ prepared.data, /* ports: */ prepared.shipped, /* move: */ token];
-  registerMove(context, null, route.link, frame);
+  registerMove(router, null, route.link, frame);
   void writeFrame(route.link, frame).catch((error) => report.dispatchEvent(new WireMessageEvent("messageerror", { data: error })));
 }
 
 function postPort(port: WireMessagePort, value: unknown, transfer?: Transferable[] | StructuredSerializeOptions): void {
   const state = port[kState]();
   if (state.closed || ownerOf(state) !== port) throw invalidStateError("Port is not entangled");
-  const route = routes(state.context).get(state.peer);
+  const route = state.router.routes.get(state.peer);
   if (!route) throw invalidStateError("Port is not entangled");
-  sendPrepared(state.context, state.peer, route, prepareMessage(state.context, state.id, state.peer, route, value, transfer), port);
+  sendPrepared(state.router, state.peer, route, prepareMessage(state.router, state.id, state.peer, route, value, transfer), port);
 }
 
 function dispatchEndpoint(endpoint: WireEndpoint, data: Uint8Array, states: PortState[]): void {
@@ -640,38 +634,38 @@ function dispatchEndpoint(endpoint: WireEndpoint, data: Uint8Array, states: Port
 }
 
 function receiveMessage(link: Link, frame: MessageFrame): void {
-  const context = link.context;
+  const router = link.router;
   const [, to, data, ports, move] = frame;
-  learnPeers(context, ports, link);
+  learnPeers(router, ports, link);
 
   if (to === null) {
-    const states = ports.map((port) => importShipped(context, port, link));
+    const states = ports.map((port) => importShipped(router, port, link));
     acknowledge(link, move);
     dispatchEndpoint(link.endpoint, data, states);
     return;
   }
 
-  const route = routes(context).get(to);
+  const route = router.routes.get(to);
   if (!route) {
-    const states = ports.map((port) => importShipped(context, port, link));
+    const states = ports.map((port) => importShipped(router, port, link));
     acknowledge(link, move);
     abandonPorts(states);
     return;
   }
   if (route.type === "local") {
-    const states = ports.map((port) => importShipped(context, port, link));
+    const states = ports.map((port) => importShipped(router, port, link));
     acknowledge(link, move);
     enqueue(route.port, ["message", /* data: */ data, /* ports: */ states]);
   } else {
-    pointShipped(context, ports, route.link);
-    registerMove(context, link, route.link, frame);
+    pointShipped(router, ports, route.link);
+    registerMove(router, link, route.link, frame);
     void writeFrame(route.link, frame).catch(() => {});
   }
 }
 
 function receiveClose(link: Link, frame: CloseFrame): void {
   const [, to, from, clean] = frame;
-  const table = routes(link.context);
+  const table = link.router.routes;
   const route = table.get(to);
   table.delete(to);
   table.delete(from);
@@ -736,7 +730,7 @@ function notifyRoute(route: Route | undefined, to: PortId, from: PortId, clean: 
 
 function disconnect(link: Link, clean: boolean, notifyRemote: boolean, error?: unknown): void {
   if (link.status !== "open") return;
-  const table = routes(link.context);
+  const table = link.router.routes;
   const lost = [...table].filter(([, route]) => route.type === "link" && route.link === link);
   const handled = new Set<PortId>();
 
@@ -752,8 +746,8 @@ function disconnect(link: Link, clean: boolean, notifyRemote: boolean, error?: u
     notifyRoute(peerRoute, route.peer, id, clean);
   }
 
-  for (const [token, move] of pendingMoves(link.context)) {
-    if (move.back === link || move.forward === link) pendingMoves(link.context).delete(token);
+  for (const [token, move] of link.router.pendingMoves) {
+    if (move.back === link || move.forward === link) link.router.pendingMoves.delete(token);
   }
 
   link.status = "closing";
@@ -765,8 +759,8 @@ function disconnect(link: Link, clean: boolean, notifyRemote: boolean, error?: u
   });
 }
 
-function closeAddress(context: WireContext, id: PortId, peer: PortId, clean: boolean): void {
-  const table = routes(context);
+function closeAddress(router: Router, id: PortId, peer: PortId, clean: boolean): void {
+  const table = router.routes;
   const route = table.get(peer);
   table.delete(id);
   table.delete(peer);
@@ -776,7 +770,7 @@ function closeAddress(context: WireContext, id: PortId, peer: PortId, clean: boo
 function abandonPorts(ports: PortState[]): void {
   for (const state of ports) {
     const inbox = state.inbox.splice(0);
-    closeAddress(state.context, state.id, state.peer, true);
+    closeAddress(state.router, state.id, state.peer, true);
     for (const envelope of inbox) if (envelope[0] === "message") abandonPorts(envelope[/* .ports */ 2]);
   }
 }
@@ -791,9 +785,9 @@ function transcodeToNative(event: MessageEvent, post: (data: unknown, ports: Mes
   post(replaceReferences(event.data, new Map(wirePorts.map((port, index) => [port, nativePorts[index]]))), nativePorts);
 }
 
-function transcodeFromNative(event: MessageEvent, context: WireContext, post: (data: unknown, ports: WireMessagePort[]) => void): void {
+function transcodeFromNative(event: MessageEvent, router: Router, post: (data: unknown, ports: WireMessagePort[]) => void): void {
   const nativePorts = [...event.ports];
-  const wirePorts = nativePorts.map((port) => WireMessagePort.fromNative(port, context));
+  const wirePorts = nativePorts.map((port) => WireMessagePort.fromNative(port, router));
   post(replaceReferences(event.data, new Map(nativePorts.map((port, index) => [port, wirePorts[index]]))), wirePorts);
 }
 
@@ -819,23 +813,21 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
     super(emptyBuffer);
     this.#state = state;
     this.#events = eventFacade(this as unknown as EventTarget, (listeners) => {
-      if (this.#status === "active" && listeners.some((item) => item.type === "message")) retainedPorts(state.context).add(this);
-      else retainedPorts(state.context).delete(this);
+      if (this.#status === "active" && listeners.some((item) => item.type === "message")) state.router.retainedPorts.add(this);
+      else state.router.retainedPorts.delete(this);
     });
     state.owner = new WeakRef(this);
-    state.context.finalizer?.register(this, [state.id, state.peer], this);
+    state.router.finalizer?.register(this, [state.id, state.peer], this);
   }
 
   [kState](): PortState { return this.#state; }
-
-  get [kContext](): WireContext { return this.#state.context; }
 
   [kDetach](): PortState {
     if (this.#status !== "active") throw dataCloneError("Cannot transfer detached port");
     this.#status = "detached";
     this.#events.clear();
-    retainedPorts(this.#state.context).delete(this);
-    this.#state.context.finalizer?.unregister(this);
+    this.#state.router.retainedPorts.delete(this);
+    this.#state.router.finalizer?.unregister(this);
     if (ownerOf(this.#state) === this) this.#state.owner = null;
     return this.#state;
   }
@@ -864,7 +856,7 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
         }
       }
       if (state.inbox.length) this[kSchedule]();
-      else if (state.closed) retainedPorts(state.context).delete(this);
+      else if (state.closed) state.router.retainedPorts.delete(this);
     });
   }
 
@@ -881,9 +873,9 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
     this.#native?.close();
     this.#status = "closed";
     this.#state.closed = true;
-    this.#state.context.finalizer?.unregister(this);
-    closeAddress(this.#state.context, this.#state.id, this.#state.peer, true);
-    if (this.#state.inbox.length === 0) retainedPorts(this.#state.context).delete(this);
+    this.#state.router.finalizer?.unregister(this);
+    closeAddress(this.#state.router, this.#state.id, this.#state.peer, true);
+    if (this.#state.inbox.length === 0) this.#state.router.retainedPorts.delete(this);
   }
 
   [kDispose](): void {
@@ -891,14 +883,14 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
     const state = this.#state;
     this.close();
     abandonInbox(state);
-    retainedPorts(state.context).delete(this);
+    state.router.retainedPorts.delete(this);
   }
 
-  static fromNative(port: MessagePort, context: WireContext = defaultContext): WireMessagePort {
-    const channel = new WireMessageChannel(context);
+  static fromNative(port: MessagePort, router: Router = defaultRouter): WireMessagePort {
+    const channel = new WireMessageChannel(router);
     const listeners = new AbortController();
     const closeBridge = (other: MessagePort) => () => { listeners.abort(); other.close(); };
-    port.addEventListener("message", (event) => transcodeFromNative(event, context, (data, ports) => channel.port2.postMessage(data, ports)), { signal: listeners.signal });
+    port.addEventListener("message", (event) => transcodeFromNative(event, router, (data, ports) => channel.port2.postMessage(data, ports)), { signal: listeners.signal });
     channel.port2.addEventListener("message", (event) => transcodeToNative(event, (data, ports) => port.postMessage(data, ports)), { signal: listeners.signal });
     port.addEventListener("close", closeBridge(channel.port2), { once: true, signal: listeners.signal });
     channel.port2.addEventListener("close", closeBridge(port), { once: true, signal: listeners.signal });
@@ -917,7 +909,7 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
       this.#nativeListeners = undefined;
     }, { once: true });
     this.addEventListener("message", (event) => transcodeToNative(event, (data, ports) => channel.port2.postMessage(data, ports)), { signal: listeners.signal });
-    channel.port2.addEventListener("message", (event) => transcodeFromNative(event, this.#state.context, (data, ports) => this.postMessage(data, ports)), { signal: listeners.signal });
+    channel.port2.addEventListener("message", (event) => transcodeFromNative(event, this.#state.router, (data, ports) => this.postMessage(data, ports)), { signal: listeners.signal });
     this.addEventListener("close", () => listeners.abort(), { once: true, signal: listeners.signal });
     this.start();
     channel.port2.start();
@@ -956,11 +948,11 @@ export class WireMessageChannel implements MessageChannel {
   readonly port1: WireMessagePort;
   readonly port2: WireMessagePort;
 
-  constructor(context: WireContext = defaultContext) {
-    const id1 = context.generateId();
-    const id2 = context.generateId();
-    this.port1 = attach(localState(context, id1, id2));
-    this.port2 = attach(localState(context, id2, id1));
+  constructor(router: Router = defaultRouter) {
+    const id1 = router.generateId();
+    const id2 = router.generateId();
+    this.port1 = attach(localState(router, id1, id2));
+    this.port2 = attach(localState(router, id2, id1));
   }
 }
 
@@ -970,10 +962,10 @@ export class WireEndpoint extends EventTarget {
   #onmessageerror: ((this: WireEndpoint, event: MessageEvent) => any) | null = null;
   #onerror: ((this: WireEndpoint, event: ErrorEvent) => any) | null = null;
 
-  constructor(stream: DuplexStream, _identifier?: unknown, context: WireContext = defaultContext) {
+  constructor(stream: DuplexStream, _identifier?: unknown, router: Router = defaultRouter) {
     super();
     const link = {
-      context,
+      router,
       endpoint: this,
       reader: stream.readable.getReader(),
       writer: stream.writable.getWriter(),
@@ -985,8 +977,6 @@ export class WireEndpoint extends EventTarget {
     void readLink(link);
   }
 
-  get [kContext](): WireContext { return this.#link.context; }
-
   postMessage(message: any, transfer?: Transferable[] | StructuredSerializeOptions): void {
     const link = this.#link;
     if (link.status !== "open") {
@@ -994,7 +984,7 @@ export class WireEndpoint extends EventTarget {
       return;
     }
     const route: LinkRoute = { type: "link", link, peer: "" };
-    sendPrepared(link.context, null, route, prepareMessage(link.context, null, null, route, message, transfer), this);
+    sendPrepared(link.router, null, route, prepareMessage(link.router, null, null, route, message, transfer), this);
   }
 
   terminate(): void { disconnect(this.#link, true, true); }

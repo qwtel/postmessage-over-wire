@@ -5,30 +5,31 @@ setDefaultTimeout(50);
 import { WireMessageChannel } from "../index";
 import {
   closeAll,
-  createTestContext,
+  createTestRouter,
   nextEvent,
   nextMessage,
   nextPortMessage,
   nextPortMessages,
+  routeCount,
   settle,
   timeout,
 } from "./test-util";
 
 describe("WireMessagePort", () => {
   it("creates two distinct ports and two live routes", () => {
-    const context = createTestContext("shape");
-    const { port1, port2 } = new WireMessageChannel(context);
+    const router = createTestRouter("shape");
+    const { port1, port2 } = new WireMessageChannel(router);
 
     expect(port1).not.toBe(port2);
-    expect(context.routeTable.size).toBe(2);
+    expect(routeCount(router)).toBe(2);
 
     closeAll(port1, port2);
-    expect(context.routeTable.size).toBe(0);
+    expect(routeCount(router)).toBe(0);
   });
 
   it("delivers messages across a local channel", async () => {
-    const context = createTestContext("local");
-    const { port1, port2 } = new WireMessageChannel(context);
+    const router = createTestRouter("local");
+    const { port1, port2 } = new WireMessageChannel(router);
 
     const received = nextPortMessage(port2);
     port1.postMessage({ local: true });
@@ -36,11 +37,11 @@ describe("WireMessagePort", () => {
     expect((await received).data).toEqual({ local: true });
 
     closeAll(port1, port2);
-    expect(context.routeTable.size).toBe(0);
+    expect(routeCount(router)).toBe(0);
   });
 
   it("does not dispatch queued messages until start() is called", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("start"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("start"));
     let dispatched = false;
     const received = nextMessage(port2).then((event) => {
       dispatched = true;
@@ -57,7 +58,7 @@ describe("WireMessagePort", () => {
   });
 
   it("makes start() idempotent", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("start-twice"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("start-twice"));
     let count = 0;
     port2.addEventListener("message", () => count++);
 
@@ -71,7 +72,7 @@ describe("WireMessagePort", () => {
   });
 
   it("starts automatically when onmessage is assigned", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("onmessage-start"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("onmessage-start"));
     const received = new Promise<MessageEvent>((resolve) => {
       port2.onmessage = resolve;
     });
@@ -82,7 +83,7 @@ describe("WireMessagePort", () => {
   });
 
   it("delivers asynchronously", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("async"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("async"));
     let synchronous = true;
     const received = nextPortMessage(port2).then(() => {
       expect(synchronous).toBe(false);
@@ -95,7 +96,7 @@ describe("WireMessagePort", () => {
   });
 
   it("uses message tasks rather than microtasks for delivery", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("tasks"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("tasks"));
     try {
       const order: string[] = [];
       port2.onmessage = () => order.push("message");
@@ -113,7 +114,7 @@ describe("WireMessagePort", () => {
   });
 
   it("preserves FIFO order for a backlog", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("fifo"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("fifo"));
     const received = nextPortMessages(port2, 50);
 
     for (let index = 0; index < 50; index++) port1.postMessage(index);
@@ -125,7 +126,7 @@ describe("WireMessagePort", () => {
   });
 
   it("preserves independent FIFO order in both directions", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("duplex"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("duplex"));
     const at1 = nextPortMessages(port1, 3);
     const at2 = nextPortMessages(port2, 3);
 
@@ -142,7 +143,7 @@ describe("WireMessagePort", () => {
   });
 
   it("removes once listeners after their first message", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("once"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("once"));
     let count = 0;
     const received = new Promise<MessageEvent>((resolve) => {
       port2.addEventListener("message", (event) => {
@@ -163,7 +164,7 @@ describe("WireMessagePort", () => {
   });
 
   it("removes one message listener without affecting the others", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("listeners"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("listeners"));
     const calls: string[] = [];
     const first = () => calls.push("first");
     const second = { handleEvent: () => calls.push("second") };
@@ -188,7 +189,7 @@ describe("WireMessagePort", () => {
   });
 
   it("does not remove a listener when the capture value differs", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("listener-capture"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("listener-capture"));
     let calls = 0;
     const listener = () => calls++;
     try {
@@ -205,7 +206,7 @@ describe("WireMessagePort", () => {
   });
 
   it("returns the callback assigned to onmessage", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("onmessage-getter"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("onmessage-getter"));
     const listener = () => {};
     try {
       port1.onmessage = listener;
@@ -217,7 +218,7 @@ describe("WireMessagePort", () => {
   });
 
   it("returns null after onmessage is cleared", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("onmessage-clear"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("onmessage-clear"));
     try {
       port1.onmessage = () => {};
 
@@ -232,7 +233,7 @@ describe("WireMessagePort", () => {
   it("exposes the WireMessagePort itself as the event target", async () => {
     // Delegating to a private EventTarget currently leaks that private object
     // through `this`, target, and currentTarget.
-    const { port1, port2 } = new WireMessageChannel(createTestContext("event-target"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("event-target"));
     try {
       const received = new Promise<[unknown, EventTarget|null, EventTarget|null]>((resolve) => {
         port2.addEventListener("message", function (event) {
@@ -253,7 +254,7 @@ describe("WireMessagePort", () => {
   });
 
   it("removes a message listener when its AbortSignal aborts", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("listener-abort"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("listener-abort"));
     const abort = new AbortController();
     let calls = 0;
     try {
@@ -270,7 +271,7 @@ describe("WireMessagePort", () => {
   });
 
   it("does not add a listener with an already-aborted signal", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("listener-already-aborted"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("listener-already-aborted"));
     const abort = new AbortController();
     let calls = 0;
     abort.abort();
@@ -287,8 +288,8 @@ describe("WireMessagePort", () => {
   });
 
   it("replaces and clears onmessage without retaining old handlers", async () => {
-    const context = createTestContext("replace-handler");
-    const { port1, port2 } = new WireMessageChannel(context);
+    const router = createTestRouter("replace-handler");
+    const { port1, port2 } = new WireMessageChannel(router);
     const calls: string[] = [];
 
     port2.onmessage = () => calls.push("old");
@@ -306,8 +307,8 @@ describe("WireMessagePort", () => {
   });
 
   it("dispatches close on the entangled port", async () => {
-    const context = createTestContext("close");
-    const { port1, port2 } = new WireMessageChannel(context);
+    const router = createTestRouter("close");
+    const { port1, port2 } = new WireMessageChannel(router);
 
     const closed = nextEvent<CloseEvent>(port2, "close");
     port2.start();
@@ -318,11 +319,11 @@ describe("WireMessagePort", () => {
     expect(event.wasClean).toBe(true);
 
     closeAll(port2);
-    expect(context.routeTable.size).toBe(0);
+    expect(routeCount(router)).toBe(0);
   });
 
   it("delivers already-queued messages before close", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("close-order"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("close-order"));
     const order: string[] = [];
     const closed = new Promise<void>((resolve) => {
       port2.addEventListener("message", ({ data }) => order.push(data));
@@ -343,7 +344,7 @@ describe("WireMessagePort", () => {
   });
 
   it("queues close until the receiving port is started", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("close-start"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("close-start"));
     let dispatched = false;
     const closed = nextEvent<CloseEvent>(port2, "close").then((event) => {
       dispatched = true;
@@ -360,7 +361,7 @@ describe("WireMessagePort", () => {
   });
 
   it("makes close() idempotent and emits one peer close", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("close-twice"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("close-twice"));
     let count = 0;
     port2.addEventListener("close", () => count++);
     port2.start();
@@ -374,7 +375,7 @@ describe("WireMessagePort", () => {
   });
 
   it("rejects postMessage() after close", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("closed-send"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("closed-send"));
     port1.close();
 
     expect(() => port1.postMessage("too late")).toThrow(DOMException);
@@ -385,7 +386,7 @@ describe("WireMessagePort", () => {
   it("retains already-queued events when the receiving port closes", async () => {
     // close() disentangles the port; it does not remove tasks already in its
     // port message queue.
-    const { port1, port2 } = new WireMessageChannel(createTestContext("queued-on-close"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("queued-on-close"));
     const messages: unknown[] = [];
     port2.addEventListener("message", ({ data }) => messages.push(data));
 
@@ -399,9 +400,9 @@ describe("WireMessagePort", () => {
   });
 
   it("queues messages sent to a port while it is being transferred locally", async () => {
-    const context = createTestContext("pending");
-    const carrier = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("pending");
+    const carrier = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
 
     carrier.port2.addEventListener("messageerror", () => {});
     payload.port1.addEventListener("messageerror", () => {});
@@ -420,9 +421,9 @@ describe("WireMessagePort", () => {
   });
 
   it("moves already-queued messages with a transferred port", async () => {
-    const context = createTestContext("queued");
-    const carrier = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("queued");
+    const carrier = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
 
     carrier.port2.addEventListener("messageerror", () => {});
     payload.port1.addEventListener("messageerror", () => {});

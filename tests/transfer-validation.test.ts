@@ -3,11 +3,11 @@ import { describe, expect, it, setDefaultTimeout } from "bun:test";
 setDefaultTimeout(50);
 
 import { WireMessageChannel } from "../index";
-import { closeAll, createEndpointPair, createTestContext, nextMessage, nextPortMessage, timeout } from "./test-util";
+import { closeAll, createEndpointPair, createTestRouter, nextMessage, nextPortMessage, timeout } from "./test-util";
 
 describe("postMessage transfer validation", () => {
   it("rejects transferring the source port", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("source"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("source"));
 
     expectDOMException(() => port1.postMessage("nope", [port1]), "DataCloneError");
 
@@ -15,7 +15,7 @@ describe("postMessage transfer validation", () => {
   });
 
   it("rejects transferring the destination port", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("destination"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("destination"));
 
     expectDOMException(() => port1.postMessage("nope", [port2]), "DataCloneError");
 
@@ -23,9 +23,9 @@ describe("postMessage transfer validation", () => {
   });
 
   it("rejects transferring the same port twice without detaching it", async () => {
-    const context = createTestContext("duplicate");
-    const { port1, port2 } = new WireMessageChannel(context);
-    const { port1: transferred, port2: peer } = new WireMessageChannel(context);
+    const router = createTestRouter("duplicate");
+    const { port1, port2 } = new WireMessageChannel(router);
+    const { port1: transferred, port2: peer } = new WireMessageChannel(router);
 
     try {
       expectDOMException(
@@ -42,9 +42,9 @@ describe("postMessage transfer validation", () => {
   });
 
   it("rejects transferring a detached port again", async () => {
-    const contextA = createTestContext("left");
-    const [endpointA, endpointB] = createEndpointPair(contextA);
-    const { port1, port2 } = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("left");
+    const [endpointA, endpointB] = createEndpointPair(routerA);
+    const { port1, port2 } = new WireMessageChannel(routerA);
 
     const firstTransfer = nextMessage(endpointB);
     endpointA.postMessage("first", [port1]);
@@ -56,7 +56,7 @@ describe("postMessage transfer validation", () => {
   });
 
   it("rejects transferring the source or destination through options syntax", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("options-invalid"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("options-invalid"));
 
     expectDOMException(
       () => port1.postMessage("source", { transfer: [port1] }),
@@ -71,7 +71,7 @@ describe("postMessage transfer validation", () => {
   });
 
   it("leaves both channel ends usable after source and destination rejection", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("validation-atomic"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("validation-atomic"));
 
     expect(() => port1.postMessage("bad source", [port1])).toThrow();
     expect(() => port1.postMessage("bad destination", [port2])).toThrow();
@@ -86,9 +86,9 @@ describe("postMessage transfer validation", () => {
   });
 
   it("rejects transferring a closed port", () => {
-    const context = createTestContext("closed-transfer");
-    const carrier = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("closed-transfer");
+    const carrier = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
     payload.port1.close();
 
     expectDOMException(
@@ -100,9 +100,9 @@ describe("postMessage transfer validation", () => {
   });
 
   it("makes the old wrapper unusable immediately after a successful transfer", async () => {
-    const context = createTestContext("detach-now");
-    const [endpointA, endpointB] = createEndpointPair(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("detach-now");
+    const [endpointA, endpointB] = createEndpointPair(router);
+    const payload = new WireMessageChannel(router);
     const transferred = nextMessage(endpointB);
 
     endpointA.postMessage("move", [payload.port1]);
@@ -118,9 +118,9 @@ describe("postMessage transfer validation", () => {
   });
 
   it("makes close() on a detached wrapper a no-op", async () => {
-    const contextA = createTestContext("detached-close-a");
-    const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("detached-close-b"));
-    const channel = new WireMessageChannel(contextA);
+    const routerA = createTestRouter("detached-close-a");
+    const [endpointA, endpointB] = createEndpointPair(routerA, createTestRouter("detached-close-b"));
+    const channel = new WireMessageChannel(routerA);
     const transferred = nextMessage(endpointB);
 
     endpointA.postMessage("move", [channel.port1]);
@@ -137,10 +137,10 @@ describe("postMessage transfer validation", () => {
   });
 
   it("leaves earlier valid ports attached when a later transfer entry is invalid", async () => {
-    const context = createTestContext("all-or-nothing");
-    const carrier = new WireMessageChannel(context);
-    const valid = new WireMessageChannel(context);
-    const invalid = new WireMessageChannel(context);
+    const router = createTestRouter("all-or-nothing");
+    const carrier = new WireMessageChannel(router);
+    const valid = new WireMessageChannel(router);
+    const invalid = new WireMessageChannel(router);
     invalid.port1.close();
 
     try {
@@ -155,7 +155,7 @@ describe("postMessage transfer validation", () => {
   });
 
   it("rejects a non-transferable value in the transfer list", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("invalid-transferable"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("invalid-transferable"));
     try {
       expect(() => port1.postMessage("invalid", [{} as Transferable])).toThrow(DOMException);
     } finally {
@@ -164,9 +164,9 @@ describe("postMessage transfer validation", () => {
   });
 
   it("rejects transferring a port that is already exposed through toNative()", () => {
-    const context = createTestContext("bridged-transfer");
-    const carrier = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("bridged-transfer");
+    const carrier = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
     const native = payload.port1.toNative();
 
     expectDOMException(
@@ -177,11 +177,11 @@ describe("postMessage transfer validation", () => {
     closeAll(native, carrier.port1, carrier.port2, payload.port1, payload.port2);
   });
 
-  it("rejects transferring a port owned by another WireContext", () => {
+  it("rejects transferring a port owned by another router", () => {
     // Moving IDs between independent route tables is not defined. The current
-    // implementation accepts this and can leave the source context inconsistent.
-    const carrier = new WireMessageChannel(createTestContext("context-a"));
-    const payload = new WireMessageChannel(createTestContext("context-b"));
+    // implementation accepts this and can leave the source router inconsistent.
+    const carrier = new WireMessageChannel(createTestRouter("router-a"));
+    const payload = new WireMessageChannel(createTestRouter("router-b"));
     try {
       expectDOMException(
         () => carrier.port1.postMessage("wrong routing domain", [payload.port1]),

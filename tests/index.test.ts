@@ -3,7 +3,7 @@ import { describe, expect, it, setDefaultTimeout } from "bun:test";
 setDefaultTimeout(50);
 
 import * as wire from "../index";
-import { closeAll, createEndpointPair, createTestContext, nextMessage, nextPortMessage } from "./test-util";
+import { closeAll, createEndpointPair, createTestRouter, nextMessage, nextPortMessage } from "./test-util";
 
 describe("postmessage-over-wire", () => {
   it("keeps the public exports available", () => {
@@ -11,29 +11,28 @@ describe("postmessage-over-wire", () => {
     expect(typeof wire.WireMessageChannel).toBe("function");
     expect(typeof wire.WireMessageEvent).toBe("function");
     expect(typeof wire.WireMessagePort).toBe("function");
-    expect(typeof wire.createWireContext).toBe("function");
+    expect(typeof wire._internals.createRouter).toBe("function");
     expect(typeof wire.isAbortError).toBe("function");
   });
 
-  it("can isolate route tables with injected contexts", () => {
-    const contextA = createTestContext("a");
-    const contextB = createTestContext("b");
+  it("can isolate routes with test routers", () => {
+    const routerA = createTestRouter("a");
+    const routerB = createTestRouter("b");
 
-    const channelA = new wire.WireMessageChannel(contextA);
-    const channelB = new wire.WireMessageChannel(contextB);
+    const channelA = new wire.WireMessageChannel(routerA);
+    const channelB = new wire.WireMessageChannel(routerB);
 
-    expect(Array.from(contextA.routeTable.keys()).sort()).toEqual(["a-1", "a-2"]);
-    expect(Array.from(contextB.routeTable.keys()).sort()).toEqual(["b-1", "b-2"]);
-    expect(contextA.routeTable).not.toBe(contextB.routeTable);
+    expect(wire._internals.routeIds(routerA).sort()).toEqual(["a-1", "a-2"]);
+    expect(wire._internals.routeIds(routerB).sort()).toEqual(["b-1", "b-2"]);
 
     closeAll(channelA.port1, channelA.port2, channelB.port1, channelB.port2);
   });
 
   it("generates cryptographically-random 128-bit bigint port IDs", () => {
-    const context = wire.createWireContext({ finalizer: null });
-    const { port1, port2 } = new wire.WireMessageChannel(context);
+    const router = wire._internals.createRouter();
+    const { port1, port2 } = new wire.WireMessageChannel(router);
     try {
-      const [id1, id2] = Array.from(context.routeTable.keys());
+      const [id1, id2] = wire._internals.routeIds(router);
 
       expect(typeof id1).toBe("bigint");
       expect(typeof id2).toBe("bigint");
@@ -45,25 +44,19 @@ describe("postmessage-over-wire", () => {
     }
   });
 
-  it("uses a supplied route table and ID generator", () => {
-    const routeTable = new Map<wire.PortId, unknown>();
+  it("supports deterministic IDs and route inspection through test internals", () => {
     let nextId = 10;
-    const context = wire.createWireContext({
-      routeTable,
-      generateId: () => nextId++,
-      finalizer: null,
-    });
-    const { port1, port2 } = new wire.WireMessageChannel(context);
+    const router = wire._internals.createRouter({ generateId: () => nextId++ });
+    const { port1, port2 } = new wire.WireMessageChannel(router);
 
-    expect(context.routeTable).toBe(routeTable);
-    expect(Array.from(routeTable.keys())).toEqual([10, 11]);
+    expect(wire._internals.routeIds(router)).toEqual([10, 11]);
 
     closeAll(port1, port2);
-    expect(routeTable.size).toBe(0);
+    expect(wire._internals.routeCount(router)).toBe(0);
   });
 
   it("keeps WireMessagePort on the DataView host-object serialization path", () => {
-    const { port1, port2 } = new wire.WireMessageChannel(createTestContext("dataview"));
+    const { port1, port2 } = new wire.WireMessageChannel(createTestRouter("dataview"));
 
     expect(port1).toBeInstanceOf(DataView);
     expect(port1.byteLength).toBe(0);
@@ -93,9 +86,9 @@ describe("postmessage-over-wire", () => {
   });
 
   it("transfers a wire port over an endpoint and keeps the remote entanglement usable", async () => {
-    const contextA = createTestContext("left");
-    const [endpointA, endpointB] = createEndpointPair(contextA);
-    const { port1, port2 } = new wire.WireMessageChannel(contextA);
+    const routerA = createTestRouter("left");
+    const [endpointA, endpointB] = createEndpointPair(routerA);
+    const { port1, port2 } = new wire.WireMessageChannel(routerA);
 
     const transferReceived = nextMessage(endpointB);
     endpointA.postMessage("take this", [port1]);

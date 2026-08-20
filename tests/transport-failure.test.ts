@@ -6,9 +6,10 @@ import { WireEndpoint, WireMessageChannel } from "../index";
 import {
   closeAll,
   createLinkedStreams,
-  createTestContext,
+  createTestRouter,
   nextEvent,
   nextMessage,
+  routeCount,
   settle,
   timeout,
 } from "./test-util";
@@ -19,7 +20,7 @@ describe("transport lifecycle and failures", () => {
     const endpoint = new WireEndpoint({
       readable: new ReadableStream<Uint8Array>(),
       writable: new WritableStream<Uint8Array>({ close() { closes++; } }),
-    }, "close-once", createTestContext("close-once"));
+    }, "close-once", createTestRouter("close-once"));
 
     endpoint.terminate();
     endpoint.terminate();
@@ -35,7 +36,7 @@ describe("transport lifecycle and failures", () => {
     const endpoint = new WireEndpoint({
       readable: new ReadableStream<Uint8Array>(),
       writable: new WritableStream<Uint8Array>({ write() { throw failure; } }),
-    }, "write-failure", createTestContext("write-failure"));
+    }, "write-failure", createTestRouter("write-failure"));
     const reported = nextEvent<MessageEvent>(endpoint, "messageerror");
 
     expect(() => endpoint.postMessage("cannot write")).not.toThrow();
@@ -48,8 +49,8 @@ describe("transport lifecycle and failures", () => {
   });
 
   it("closes the local peer of every channel routed through a failed writer", async () => {
-    const contextA = createTestContext("fail-routes-a");
-    const contextB = createTestContext("fail-routes-b");
+    const routerA = createTestRouter("fail-routes-a");
+    const routerB = createTestRouter("fail-routes-b");
     const [leftBase, rightStream] = createLinkedStreams();
     const baseWriter = leftBase.writable.getWriter();
     let failWrites = false;
@@ -65,9 +66,9 @@ describe("transport lifecycle and failures", () => {
         abort(reason) { return baseWriter.abort(reason); },
       }),
     };
-    const endpointA = new WireEndpoint(controlledLeft, "controlled", contextA);
-    const endpointB = new WireEndpoint(rightStream, "remote", contextB);
-    const channel = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(controlledLeft, "controlled", routerA);
+    const endpointB = new WireEndpoint(rightStream, "remote", routerB);
+    const channel = new WireMessageChannel(routerA);
     let moved: MessagePort|undefined;
     try {
       const movedEvent = nextMessage(endpointB);
@@ -81,7 +82,7 @@ describe("transport lifecycle and failures", () => {
 
       await timeout(localClosed, 25);
       await settle();
-      expect(contextA.routeTable.size).toBe(0);
+      expect(routeCount(routerA)).toBe(0);
     } finally {
       closeAll(channel.port1, channel.port2, moved, endpointA, endpointB);
     }
@@ -94,7 +95,7 @@ describe("transport lifecycle and failures", () => {
       start(controller) { finish = () => controller.close(); },
     });
     const writable = new WritableStream<Uint8Array>({ close() { closes++; } });
-    const endpoint = new WireEndpoint({ readable, writable }, "eof", createTestContext("eof"));
+    const endpoint = new WireEndpoint({ readable, writable }, "eof", createTestRouter("eof"));
 
     try {
       finish();
@@ -110,8 +111,8 @@ describe("transport lifecycle and failures", () => {
     // A general readable/writable pair does not couple failure of one direction
     // to the opposite reader. Solving this requires a transport-level failure
     // signal or a liveness protocol; another frame cannot cross the broken path.
-    const contextA = createTestContext("half-open-a");
-    const contextB = createTestContext("half-open-b");
+    const routerA = createTestRouter("half-open-a");
+    const routerB = createTestRouter("half-open-b");
     const [leftBase, rightStream] = createLinkedStreams();
     const baseWriter = leftBase.writable.getWriter();
     let failWrites = false;
@@ -126,9 +127,9 @@ describe("transport lifecycle and failures", () => {
         abort(reason) { return baseWriter.abort(reason); },
       }),
     };
-    const endpointA = new WireEndpoint(controlledLeft, "half-open", contextA);
-    const endpointB = new WireEndpoint(rightStream, "remote-half", contextB);
-    const channel = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(controlledLeft, "half-open", routerA);
+    const endpointB = new WireEndpoint(rightStream, "remote-half", routerB);
+    const channel = new WireMessageChannel(routerA);
     const movedEvent = nextMessage(endpointB);
     endpointA.postMessage("move", [channel.port1]);
     const moved = (await movedEvent).ports[0];

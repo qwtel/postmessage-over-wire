@@ -6,38 +6,39 @@ import { WireEndpoint, WireMessageChannel } from "../index";
 import {
   closeAll,
   createLinkedStreams,
-  createTestContext,
+  createTestRouter,
   nextEvent,
   nextMessage,
   nextPortMessage,
   nextPortMessages,
+  routeCount,
   settle,
   timeout,
 } from "./test-util";
 
 describe("postmessage-over-wire routing", () => {
   it("keeps a port usable after it is sent out and then returned", async () => {
-    const contextA = createTestContext("left");
+    const routerA = createTestRouter("left");
     const [endpointA, endpointB] = (() => {
       const [left, right] = createLinkedStreams();
       return [
-        new WireEndpoint(left, "left", contextA),
-        new WireEndpoint(right, "right", createTestContext("right")),
+        new WireEndpoint(left, "left", routerA),
+        new WireEndpoint(right, "right", createTestRouter("right")),
       ] as const;
     })();
-    const { port1, port2 } = new WireMessageChannel(contextA);
+    const { port1, port2 } = new WireMessageChannel(routerA);
 
     const sentToB = nextMessage(endpointB);
     endpointA.postMessage("out", [port1]);
     const remotePort = (await sentToB).ports[0];
     await settle();
-    expect(contextA.routeTable.size).toBe(2);
+    expect(routeCount(routerA)).toBe(2);
 
     const returnedToA = nextMessage(endpointA);
     endpointB.postMessage("back", [remotePort]);
     const returnedPort = (await returnedToA).ports[0];
     await settle();
-    expect(contextA.routeTable.size).toBe(2);
+    expect(routeCount(routerA)).toBe(2);
 
     const received = nextPortMessage(port2);
     returnedPort.postMessage("still entangled");
@@ -47,17 +48,17 @@ describe("postmessage-over-wire routing", () => {
     closeAll(returnedPort, port2, endpointA, endpointB);
   });
 
-  it("routes a transferred port through an intermediate endpoint context", async () => {
-    const contextA = createTestContext("a");
-    const contextB = createTestContext("b");
-    const contextC = createTestContext("c");
+  it("routes a transferred port through an intermediate router", async () => {
+    const routerA = createTestRouter("a");
+    const routerB = createTestRouter("b");
+    const routerC = createTestRouter("c");
     const [aSide, bFromA] = createLinkedStreams();
     const [bToC, cSide] = createLinkedStreams();
-    const endpointA = new WireEndpoint(aSide, "a", contextA);
-    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", contextB);
-    const endpointBToC = new WireEndpoint(bToC, "b-to-c", contextB);
-    const endpointC = new WireEndpoint(cSide, "c", contextC);
-    const { port1, port2 } = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(aSide, "a", routerA);
+    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", routerB);
+    const endpointBToC = new WireEndpoint(bToC, "b-to-c", routerB);
+    const endpointC = new WireEndpoint(cSide, "c", routerC);
+    const { port1, port2 } = new WireMessageChannel(routerA);
 
     const receivedByB = nextMessage(endpointBFromA);
     endpointA.postMessage("to-b", [port1]);
@@ -76,12 +77,12 @@ describe("postmessage-over-wire routing", () => {
   });
 
   it("closes both sides of transferred channels when their wire link closes", async () => {
-    const contextA = createTestContext("left");
-    const contextB = createTestContext("right");
+    const routerA = createTestRouter("left");
+    const routerB = createTestRouter("right");
     const [left, right] = createLinkedStreams();
-    const endpointA = new WireEndpoint(left, "left", contextA);
-    const endpointB = new WireEndpoint(right, "right", contextB);
-    const { port1, port2 } = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(left, "left", routerA);
+    const endpointB = new WireEndpoint(right, "right", routerB);
+    const { port1, port2 } = new WireMessageChannel(routerA);
 
     let remotePort: MessagePort|undefined;
     try {
@@ -97,24 +98,24 @@ describe("postmessage-over-wire routing", () => {
 
       await timeout(Promise.all([localClose, remoteClose]), 25);
       await settle();
-      expect(contextA.routeTable.size).toBe(0);
-      expect(contextB.routeTable.size).toBe(0);
+      expect(routeCount(routerA)).toBe(0);
+      expect(routeCount(routerB)).toBe(0);
     } finally {
       closeAll(port1, port2, remotePort, endpointA, endpointB);
     }
   });
 
   it("cleans intermediate routes after a multi-hop transferred port returns to origin", async () => {
-    const contextA = createTestContext("a");
-    const contextB = createTestContext("b");
-    const contextC = createTestContext("c");
+    const routerA = createTestRouter("a");
+    const routerB = createTestRouter("b");
+    const routerC = createTestRouter("c");
     const [aSide, bFromA] = createLinkedStreams();
     const [bToC, cSide] = createLinkedStreams();
-    const endpointA = new WireEndpoint(aSide, "a", contextA);
-    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", contextB);
-    const endpointBToC = new WireEndpoint(bToC, "b-to-c", contextB);
-    const endpointC = new WireEndpoint(cSide, "c", contextC);
-    const { port1, port2 } = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(aSide, "a", routerA);
+    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", routerB);
+    const endpointBToC = new WireEndpoint(bToC, "b-to-c", routerB);
+    const endpointC = new WireEndpoint(cSide, "c", routerC);
+    const { port1, port2 } = new WireMessageChannel(routerA);
     let returnedPort: MessagePort|undefined;
 
     try {
@@ -139,24 +140,24 @@ describe("postmessage-over-wire routing", () => {
       returnedPort.postMessage("home");
 
       expect((await receivedByLocalPort).data).toBe("home");
-      expect(contextB.routeTable.size).toBe(0);
-      expect(contextC.routeTable.size).toBe(0);
+      expect(routeCount(routerB)).toBe(0);
+      expect(routeCount(routerC)).toBe(0);
     } finally {
       closeAll(returnedPort, port2, endpointA, endpointBFromA, endpointBToC, endpointC);
     }
   });
 
   it("keeps a multi-hop channel bidirectional", async () => {
-    const contextA = createTestContext("duplex-a");
-    const contextB = createTestContext("duplex-b");
-    const contextC = createTestContext("duplex-c");
+    const routerA = createTestRouter("duplex-a");
+    const routerB = createTestRouter("duplex-b");
+    const routerC = createTestRouter("duplex-c");
     const [aSide, bFromA] = createLinkedStreams();
     const [bToC, cSide] = createLinkedStreams();
-    const endpointA = new WireEndpoint(aSide, "a", contextA);
-    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", contextB);
-    const endpointBToC = new WireEndpoint(bToC, "b-to-c", contextB);
-    const endpointC = new WireEndpoint(cSide, "c", contextC);
-    const channel = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(aSide, "a", routerA);
+    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", routerB);
+    const endpointBToC = new WireEndpoint(bToC, "b-to-c", routerB);
+    const endpointC = new WireEndpoint(cSide, "c", routerC);
+    const channel = new WireMessageChannel(routerA);
 
     const atB = nextMessage(endpointBFromA);
     endpointA.postMessage("to b", [channel.port1]);
@@ -176,16 +177,16 @@ describe("postmessage-over-wire routing", () => {
   });
 
   it("forwards messages that arrive at an intermediate node during the next move", async () => {
-    const contextA = createTestContext("race-a");
-    const contextB = createTestContext("race-b");
-    const contextC = createTestContext("race-c");
+    const routerA = createTestRouter("race-a");
+    const routerB = createTestRouter("race-b");
+    const routerC = createTestRouter("race-c");
     const [aSide, bFromA] = createLinkedStreams();
     const [bToC, cSide] = createLinkedStreams();
-    const endpointA = new WireEndpoint(aSide, "a", contextA);
-    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", contextB);
-    const endpointBToC = new WireEndpoint(bToC, "b-to-c", contextB);
-    const endpointC = new WireEndpoint(cSide, "c", contextC);
-    const channel = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(aSide, "a", routerA);
+    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", routerB);
+    const endpointBToC = new WireEndpoint(bToC, "b-to-c", routerB);
+    const endpointC = new WireEndpoint(cSide, "c", routerC);
+    const channel = new WireMessageChannel(routerA);
 
     const atB = nextMessage(endpointBFromA);
     endpointA.postMessage("to b", [channel.port1]);
@@ -200,16 +201,16 @@ describe("postmessage-over-wire routing", () => {
   });
 
   it("preserves a larger ordered backlog across an intermediate router", async () => {
-    const contextA = createTestContext("backlog-a");
-    const contextB = createTestContext("backlog-b");
-    const contextC = createTestContext("backlog-c");
+    const routerA = createTestRouter("backlog-a");
+    const routerB = createTestRouter("backlog-b");
+    const routerC = createTestRouter("backlog-c");
     const [aSide, bFromA] = createLinkedStreams();
     const [bToC, cSide] = createLinkedStreams();
-    const endpointA = new WireEndpoint(aSide, "a", contextA);
-    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", contextB);
-    const endpointBToC = new WireEndpoint(bToC, "b-to-c", contextB);
-    const endpointC = new WireEndpoint(cSide, "c", contextC);
-    const channel = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(aSide, "a", routerA);
+    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", routerB);
+    const endpointBToC = new WireEndpoint(bToC, "b-to-c", routerB);
+    const endpointC = new WireEndpoint(cSide, "c", routerC);
+    const channel = new WireMessageChannel(routerA);
 
     const atB = nextMessage(endpointBFromA);
     endpointA.postMessage("to b", [channel.port1]);
@@ -228,16 +229,16 @@ describe("postmessage-over-wire routing", () => {
   });
 
   it("propagates an intermediate link termination to both channel endpoints", async () => {
-    const contextA = createTestContext("failure-a");
-    const contextB = createTestContext("failure-b");
-    const contextC = createTestContext("failure-c");
+    const routerA = createTestRouter("failure-a");
+    const routerB = createTestRouter("failure-b");
+    const routerC = createTestRouter("failure-c");
     const [aSide, bFromA] = createLinkedStreams();
     const [bToC, cSide] = createLinkedStreams();
-    const endpointA = new WireEndpoint(aSide, "a", contextA);
-    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", contextB);
-    const endpointBToC = new WireEndpoint(bToC, "b-to-c", contextB);
-    const endpointC = new WireEndpoint(cSide, "c", contextC);
-    const channel = new WireMessageChannel(contextA);
+    const endpointA = new WireEndpoint(aSide, "a", routerA);
+    const endpointBFromA = new WireEndpoint(bFromA, "b-from-a", routerB);
+    const endpointBToC = new WireEndpoint(bToC, "b-to-c", routerB);
+    const endpointC = new WireEndpoint(cSide, "c", routerC);
+    const channel = new WireMessageChannel(routerA);
 
     let portAtB: MessagePort|undefined;
     let portAtC: MessagePort|undefined;
@@ -257,9 +258,9 @@ describe("postmessage-over-wire routing", () => {
 
       await timeout(Promise.all([closedAtA, closedAtC]), 25);
       await settle();
-      expect(contextA.routeTable.size).toBe(0);
-      expect(contextB.routeTable.size).toBe(0);
-      expect(contextC.routeTable.size).toBe(0);
+      expect(routeCount(routerA)).toBe(0);
+      expect(routeCount(routerB)).toBe(0);
+      expect(routeCount(routerC)).toBe(0);
     } finally {
       closeAll(
         channel.port1,

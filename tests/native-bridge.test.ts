@@ -5,14 +5,14 @@ setDefaultTimeout(50);
 import { WireMessageChannel, WireMessagePort } from "../index";
 import {
   closeAll,
-  createTestContext,
+  createTestRouter,
   nextMessage,
   nextPortMessage,
 } from "./test-util";
 
 describe("native MessagePort bridging", () => {
   it("memoizes toNative() so one wire wrapper has one native facade", () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("native-memo"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("native-memo"));
 
     const first = port1.toNative();
     const second = port1.toNative();
@@ -22,7 +22,7 @@ describe("native MessagePort bridging", () => {
   });
 
   it("delivers from the wire peer to a toNative() facade", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("wire-native"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("wire-native"));
     const native = port1.toNative();
     const received = nextMessage(native);
     native.start();
@@ -34,7 +34,7 @@ describe("native MessagePort bridging", () => {
   });
 
   it("delivers from a toNative() facade to the wire peer", async () => {
-    const { port1, port2 } = new WireMessageChannel(createTestContext("native-wire"));
+    const { port1, port2 } = new WireMessageChannel(createTestRouter("native-wire"));
     const native = port1.toNative();
     const received = nextPortMessage(port2);
 
@@ -46,7 +46,7 @@ describe("native MessagePort bridging", () => {
 
   it("delivers from a native peer through fromNative()", async () => {
     const native = new MessageChannel();
-    const wire = WireMessagePort.fromNative(native.port1, createTestContext("from-native"));
+    const wire = WireMessagePort.fromNative(native.port1, createTestRouter("from-native"));
     const received = nextPortMessage(wire);
 
     native.port2.postMessage("native to wire");
@@ -57,7 +57,7 @@ describe("native MessagePort bridging", () => {
 
   it("delivers from fromNative() to the native peer", async () => {
     const native = new MessageChannel();
-    const wire = WireMessagePort.fromNative(native.port1, createTestContext("to-native-peer"));
+    const wire = WireMessagePort.fromNative(native.port1, createTestRouter("to-native-peer"));
     const received = nextMessage(native.port2);
     native.port2.start();
 
@@ -68,9 +68,9 @@ describe("native MessagePort bridging", () => {
   });
 
   it("converts a transferred wire port into a native transferred port", async () => {
-    const context = createTestContext("wire-port-native");
-    const bridge = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("wire-port-native");
+    const bridge = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
     const nativeBridge = bridge.port1.toNative();
     const transferred = nextMessage(nativeBridge);
     nativeBridge.start();
@@ -88,8 +88,8 @@ describe("native MessagePort bridging", () => {
   });
 
   it("converts a transferred native port into a wire transferred port", async () => {
-    const context = createTestContext("native-port-wire");
-    const bridge = new WireMessageChannel(context);
+    const router = createTestRouter("native-port-wire");
+    const bridge = new WireMessageChannel(router);
     const nativeBridge = bridge.port1.toNative();
     const payload = new MessageChannel();
     const transferred = nextPortMessage(bridge.port2);
@@ -108,9 +108,9 @@ describe("native MessagePort bridging", () => {
   });
 
   it("replaces transferred ports nested in Map and Set across the bridge", async () => {
-    const context = createTestContext("native-collections");
-    const bridge = new WireMessageChannel(context);
-    const payload = new WireMessageChannel(context);
+    const router = createTestRouter("native-collections");
+    const bridge = new WireMessageChannel(router);
+    const payload = new WireMessageChannel(router);
     const nativeBridge = bridge.port1.toNative();
     const transferred = nextMessage(nativeBridge);
     nativeBridge.start();

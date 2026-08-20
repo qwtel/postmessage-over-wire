@@ -9,7 +9,7 @@ import {
   createEndpointPair,
   createFragmentedLinkedStreams,
   createLinkedStreams,
-  createTestContext,
+  createTestRouter,
   nextEvent,
   nextMessage,
   nextMessages,
@@ -41,10 +41,10 @@ describe("WireEndpoint", () => {
         }),
       };
     };
-    const leftContext = createTestContext("tuple-left");
-    const left = new WireEndpoint(capture(leftStream, leftFrames), "left", leftContext);
-    const right = new WireEndpoint(capture(rightStream, rightFrames), "right", createTestContext("tuple-right"));
-    const channel = new WireMessageChannel(leftContext);
+    const leftRouter = createTestRouter("tuple-left");
+    const left = new WireEndpoint(capture(leftStream, leftFrames), "left", leftRouter);
+    const right = new WireEndpoint(capture(rightStream, rightFrames), "right", createTestRouter("tuple-right"));
+    const channel = new WireMessageChannel(leftRouter);
     const transferred = nextMessage(right);
 
     channel.port2.postMessage("queued before transfer");
@@ -105,8 +105,8 @@ describe("WireEndpoint", () => {
 
   it("treats the transport as a byte stream rather than relying on write boundaries", async () => {
     const [leftStream, rightStream] = createFragmentedLinkedStreams();
-    const left = new WireEndpoint(leftStream, "fragmented-left", createTestContext("fragmented-left"));
-    const right = new WireEndpoint(rightStream, "fragmented-right", createTestContext("fragmented-right"));
+    const left = new WireEndpoint(leftStream, "fragmented-left", createTestRouter("fragmented-left"));
+    const right = new WireEndpoint(rightStream, "fragmented-right", createTestRouter("fragmented-right"));
     const atLeft = nextMessage(left);
     const atRight = nextMessage(right);
 
@@ -178,7 +178,7 @@ describe("WireEndpoint", () => {
       },
     });
     const writable = new WritableStream<Uint8Array>();
-    const endpoint = new WireEndpoint({ readable, writable }, "broken-read", createTestContext("broken-read"));
+    const endpoint = new WireEndpoint({ readable, writable }, "broken-read", createTestRouter("broken-read"));
     const error = new Error("read failed");
     const reported = nextEvent<ErrorEvent>(endpoint, "error");
 
@@ -196,7 +196,7 @@ describe("WireEndpoint", () => {
       },
     });
     const writable = new WritableStream<Uint8Array>();
-    const endpoint = new WireEndpoint({ readable, writable }, "aborted", createTestContext("aborted"));
+    const endpoint = new WireEndpoint({ readable, writable }, "aborted", createTestRouter("aborted"));
     let errors = 0;
     endpoint.addEventListener("error", () => errors++);
 
@@ -216,7 +216,7 @@ describe("WireEndpoint", () => {
       },
     });
     const writable = new WritableStream<Uint8Array>({ close() { closes++; } });
-    const endpoint = new WireEndpoint({ readable, writable }, "aborted-close", createTestContext("aborted-close"));
+    const endpoint = new WireEndpoint({ readable, writable }, "aborted-close", createTestRouter("aborted-close"));
 
     try {
       fail(new DOMException("cancelled", "AbortError"));
@@ -240,7 +240,7 @@ describe("WireEndpoint", () => {
       },
     });
     const writable = new WritableStream<Uint8Array>();
-    const endpoint = new WireEndpoint({ readable, writable }, "malformed", createTestContext("malformed"));
+    const endpoint = new WireEndpoint({ readable, writable }, "malformed", createTestRouter("malformed"));
     const reported = nextEvent<ErrorEvent>(endpoint, "error");
 
     push(new Uint8Array([0xff, 0x00, 0x01]));
@@ -254,13 +254,13 @@ describe("WireEndpoint", () => {
   });
 
   it("does not close unrelated local channels when its link terminates", async () => {
-    const contextA = createTestContext("isolated-link-a");
-    const contextB = createTestContext("isolated-link-b");
+    const routerA = createTestRouter("isolated-link-a");
+    const routerB = createTestRouter("isolated-link-b");
     const [leftStream, rightStream] = createLinkedStreams();
-    const left = new WireEndpoint(leftStream, "left", contextA);
-    const right = new WireEndpoint(rightStream, "right", contextB);
-    const local = new WireMessageChannel(contextA);
-    const remote = new WireMessageChannel(contextA);
+    const left = new WireEndpoint(leftStream, "left", routerA);
+    const right = new WireEndpoint(rightStream, "right", routerB);
+    const local = new WireMessageChannel(routerA);
+    const remote = new WireMessageChannel(routerA);
     const transferred = nextMessage(right);
     left.postMessage("move", [remote.port1]);
     const remotePort = (await transferred).ports[0];
@@ -274,10 +274,10 @@ describe("WireEndpoint", () => {
     closeAll(local.port1, local.port2, remote.port2, remotePort, right);
   });
 
-  it("does not close routes owned by another link in the same context", async () => {
-    const central = createTestContext("central");
-    const [left1, remote1] = createEndpointPair(central, createTestContext("remote-1"));
-    const [left2, remote2] = createEndpointPair(central, createTestContext("remote-2"));
+  it("does not close routes owned by another link in the same router", async () => {
+    const central = createTestRouter("central");
+    const [left1, remote1] = createEndpointPair(central, createTestRouter("remote-1"));
+    const [left2, remote2] = createEndpointPair(central, createTestRouter("remote-2"));
     const channel1 = new WireMessageChannel(central);
     const channel2 = new WireMessageChannel(central);
     const transfer1 = nextMessage(remote1);
