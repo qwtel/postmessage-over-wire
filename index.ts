@@ -135,9 +135,11 @@
  *
  * Frame writes are serialized and wait for `writer.ready`. Link EOF or failure
  * removes routes using that link and propagates an unclean close toward their
- * remaining local or remote peers. Frame bodies currently have no magic,
- * version negotiation, authentication, or size limit; both peers must use the
- * same trusted protocol version.
+ * remaining local or remote peers. A `WireEndpoint` dispatches `error` for a
+ * detected non-abort failure, followed by exactly one `close`; explicit
+ * termination is clean, while EOF and failure are unclean. Frame bodies
+ * currently have no magic, version negotiation, authentication, or size limit;
+ * both peers must use the same trusted protocol version.
  *
  * ## Web-platform behavior
  *
@@ -210,7 +212,7 @@ const kConstruct = Symbol("constructWireMessagePort");
 const kState = Symbol("state");
 const kDetach = Symbol("detach");
 const kSchedule = Symbol("schedule");
-const kDispose: symbol = (Symbol as any).dispose ?? Symbol.for("Symbol.dispose");
+const kDispose: typeof Symbol.dispose = ((Symbol as any).dispose ?? Symbol.for("Symbol.dispose")) as typeof Symbol.dispose;
 const replacementTag = 77;
 const globalRoutes = Symbol.for("postmessage-over-wire.routes.v2");
 
@@ -697,8 +699,7 @@ async function readLink(link: Link): Promise<void> {
       if (consumed) buffered = consumed === buffered.byteLength ? new Uint8Array() : buffered.slice(consumed);
     }
   } catch (error) {
-    if (link.status === "open" && !isAbortError(error)) link.endpoint.dispatchEvent(errorEvent(error));
-    disconnect(link, false, false);
+    disconnect(link, false, false, error);
   }
 }
 
@@ -719,7 +720,7 @@ function notifyRoute(route: Route | undefined, to: PortId, from: PortId, clean: 
   else if (route?.type === "link") void writeFrame(route.link, ["close", /* to: */ to, /* from: */ from, /* clean: */ clean]).catch(() => {});
 }
 
-function disconnect(link: Link, clean: boolean, notifyRemote: boolean, _error?: unknown): void {
+function disconnect(link: Link, clean: boolean, notifyRemote: boolean, error?: unknown): void {
   if (link.status !== "open") return;
   const table = routes(link.context);
   const lost = [...table].filter(([, route]) => route.type === "link" && route.link === link);
@@ -742,6 +743,8 @@ function disconnect(link: Link, clean: boolean, notifyRemote: boolean, _error?: 
   }
 
   link.status = "closing";
+  if (error !== undefined && !isAbortError(error)) link.endpoint.dispatchEvent(errorEvent(error));
+  link.endpoint.dispatchEvent(closeEvent(clean));
   void finishWriter(link).finally(() => {
     link.status = "closed";
     void link.reader.cancel().catch(() => {});
@@ -754,6 +757,18 @@ function closeAddress(context: WireContext, id: PortId, peer: PortId, clean: boo
   table.delete(id);
   table.delete(peer);
   notifyRoute(route, peer, id, clean);
+}
+
+function abandonPorts(ports: PortState[]): void {
+  for (const state of ports) {
+    const inbox = state.inbox.splice(0);
+    closeAddress(state.context, state.id, state.peer, true);
+    for (const envelope of inbox) if (envelope[0] === "message") abandonPorts(envelope[/* .ports */ 2]);
+  }
+}
+
+function abandonInbox(state: PortState): void {
+  for (const envelope of state.inbox.splice(0)) if (envelope[0] === "message") abandonPorts(envelope[/* .ports */ 2]);
 }
 
 function transcodeToNative(event: MessageEvent, post: (data: unknown, ports: MessagePort[]) => void): void {
@@ -845,6 +860,7 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
 
   close(): void {
     if (this.#status !== "active") return;
+    this.#native?.close();
     this.#status = "closed";
     this.#state.closed = true;
     this.#state.context.finalizer?.unregister(this);
@@ -852,13 +868,20 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
     if (this.#state.inbox.length === 0) this.#state.context.nonGCedPorts.delete(this);
   }
 
-  [kDispose](): void { this.close(); }
+  [kDispose](): void {
+    if (this.#status === "detached") return;
+    const state = this.#state;
+    this.close();
+    abandonInbox(state);
+    state.context.nonGCedPorts.delete(this);
+  }
 
   static fromNative(port: MessagePort, context: WireContext = defaultContext): WireMessagePort {
     const channel = new WireMessageChannel(context);
     port.addEventListener("message", (event) => transcodeFromNative(event, context, (data, ports) => channel.port2.postMessage(data, ports)));
     channel.port2.addEventListener("message", (event) => transcodeToNative(event, (data, ports) => port.postMessage(data, ports)));
     port.addEventListener("close", () => channel.port2.close(), { once: true });
+    channel.port2.addEventListener("close", () => port.close(), { once: true });
     port.start();
     channel.port2.start();
     return channel.port1;
