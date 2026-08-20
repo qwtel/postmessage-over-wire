@@ -250,13 +250,16 @@ describe("deterministic lifetime management", () => {
     const closed = Promise.withResolvers<void>();
     class ObservedNativePort extends EventTarget {
       closes = 0;
-      listeners = 0;
+      listeners = new Set<EventListenerOrEventListenerObject>();
       override addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
-        if (listener) this.listeners++;
+        if (listener) {
+          this.listeners.add(listener);
+          if (typeof options === "object") options.signal?.addEventListener("abort", () => this.listeners.delete(listener), { once: true });
+        }
         super.addEventListener(type, listener, options);
       }
       override removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
-        if (listener) this.listeners--;
+        if (listener) this.listeners.delete(listener);
         super.removeEventListener(type, listener, options);
       }
       postMessage() {}
@@ -276,7 +279,7 @@ describe("deterministic lifetime management", () => {
       }
       await timeout(closed.promise);
       expect(native.closes).toBe(1);
-      expect(native.listeners).toBe(0);
+      expect(native.listeners.size).toBe(0);
     } finally {
       native.dispatchEvent(new Event("close"));
       closeAll(wire);
@@ -285,16 +288,16 @@ describe("deterministic lifetime management", () => {
 
   it("explicitly closing a toNative bridge closes its native facade", () => {
     const NativeMessageChannel = globalThis.MessageChannel;
-    let privatePortListenerRemovals = 0;
+    let privatePortListenerAborts = 0;
     class ObservedMessageChannel extends NativeMessageChannel {
       constructor() {
         super();
-        const removeEventListener = this.port2.removeEventListener.bind(this.port2);
-        Object.defineProperty(this.port2, "removeEventListener", {
+        const addEventListener = this.port2.addEventListener.bind(this.port2);
+        Object.defineProperty(this.port2, "addEventListener", {
           configurable: true,
-          value(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
-            if (type === "message" && listener) privatePortListenerRemovals++;
-            removeEventListener(type, listener, options);
+          value(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+            if (type === "message" && typeof options === "object") options.signal?.addEventListener("abort", () => privatePortListenerAborts++, { once: true });
+            addEventListener(type, listener!, options);
           },
         });
       }
@@ -314,7 +317,7 @@ describe("deterministic lifetime management", () => {
       }
       channel.port1.close();
       expect(closes).toBe(1);
-      expect(privatePortListenerRemovals).toBe(1);
+      expect(privatePortListenerAborts).toBe(1);
     } finally {
       Object.defineProperty(globalThis, "MessageChannel", { configurable: true, writable: true, value: NativeMessageChannel });
       nativeClose();

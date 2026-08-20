@@ -188,12 +188,14 @@ const kPending = Symbol("pendingMoves");
 
 export type WireContext = {
   routeTable: Map<PortId, unknown>;
-  nonGCedPorts: Set<WireMessagePort>;
   generateId(): PortId;
   finalizer?: FinalizationRegistry<HeldPort> | null;
 };
 
-type InternalContext = WireContext & { [kPending]: Map<string, PendingMove> };
+type InternalContext = WireContext & {
+  retainedPorts: Set<WireMessagePort>;
+  [kPending]: Map<string, PendingMove>;
+};
 
 type PortState = {
   context: WireContext; id: PortId; peer: PortId; inbox: LocalEnvelope[];
@@ -208,16 +210,22 @@ type Link = {
 
 const emptyBuffer = new ArrayBuffer(0);
 const emptyFramePrefix = new Uint8Array(4);
+
 const kConstruct = Symbol("constructWireMessagePort");
 const kState = Symbol("state");
 const kDetach = Symbol("detach");
 const kSchedule = Symbol("schedule");
 const kDispose: typeof Symbol.dispose = ((Symbol as any).dispose ?? Symbol.for("Symbol.dispose")) as typeof Symbol.dispose;
+
+/** @internal Used by adapters that must create ports in an existing routing context. */
+export const kContext = Symbol("context");
+
 const replacementTag = 77;
 const globalRoutes = Symbol.for("postmessage-over-wire.routes.v2");
 
 const routes = (context: WireContext) => context.routeTable as Map<PortId, Route>;
 const pendingMoves = (context: WireContext) => (context as InternalContext)[kPending];
+const retainedPorts = (context: WireContext) => (context as InternalContext).retainedPorts;
 const ownerOf = (state: PortState) => state.owner?.deref();
 const dataCloneError = (message: string) => new DOMException(message, "DataCloneError");
 const invalidStateError = (message: string) => new DOMException(message, "InvalidStateError");
@@ -238,7 +246,7 @@ export function createWireContext(options: {
 } = {}): WireContext {
   const context: InternalContext = {
     routeTable: options.routeTable ?? new Map(),
-    nonGCedPorts: new Set<WireMessagePort>(),
+    retainedPorts: new Set<WireMessagePort>(),
     generateId: options.generateId ?? randomId,
     finalizer: null,
     [kPending]: new Map<string, PendingMove>(),
@@ -644,7 +652,12 @@ function receiveMessage(link: Link, frame: MessageFrame): void {
   }
 
   const route = routes(context).get(to);
-  if (!route) return;
+  if (!route) {
+    const states = ports.map((port) => importShipped(context, port, link));
+    acknowledge(link, move);
+    abandonPorts(states);
+    return;
+  }
   if (route.type === "local") {
     const states = ports.map((port) => importShipped(context, port, link));
     acknowledge(link, move);
@@ -681,6 +694,7 @@ async function readLink(link: Link): Promise<void> {
   try {
     while (true) {
       const { done, value } = await link.reader.read();
+      if (link.status !== "open") return;
       if (done) {
         if (buffered.byteLength) throw new Error("Truncated wire frame");
         disconnect(link, false, false);
@@ -797,6 +811,7 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
   #onmessage: ((this: MessagePort, event: MessageEvent) => any) | null = null;
   #onmessageerror: ((this: MessagePort, event: MessageEvent) => any) | null = null;
   #native?: MessagePort;
+  #nativeListeners?: AbortController;
   transferable = true;
 
   constructor(key: symbol, state?: PortState) {
@@ -804,8 +819,8 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
     super(emptyBuffer);
     this.#state = state;
     this.#events = eventFacade(this as unknown as EventTarget, (listeners) => {
-      if (this.#status === "active" && listeners.some((item) => item.type === "message")) state.context.nonGCedPorts.add(this);
-      else state.context.nonGCedPorts.delete(this);
+      if (this.#status === "active" && listeners.some((item) => item.type === "message")) retainedPorts(state.context).add(this);
+      else retainedPorts(state.context).delete(this);
     });
     state.owner = new WeakRef(this);
     state.context.finalizer?.register(this, [state.id, state.peer], this);
@@ -813,11 +828,13 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
 
   [kState](): PortState { return this.#state; }
 
+  get [kContext](): WireContext { return this.#state.context; }
+
   [kDetach](): PortState {
     if (this.#status !== "active") throw dataCloneError("Cannot transfer detached port");
     this.#status = "detached";
     this.#events.clear();
-    this.#state.context.nonGCedPorts.delete(this);
+    retainedPorts(this.#state.context).delete(this);
     this.#state.context.finalizer?.unregister(this);
     if (ownerOf(this.#state) === this) this.#state.owner = null;
     return this.#state;
@@ -847,7 +864,7 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
         }
       }
       if (state.inbox.length) this[kSchedule]();
-      else if (state.closed) state.context.nonGCedPorts.delete(this);
+      else if (state.closed) retainedPorts(state.context).delete(this);
     });
   }
 
@@ -860,12 +877,13 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
 
   close(): void {
     if (this.#status !== "active") return;
+    this.#nativeListeners?.abort();
     this.#native?.close();
     this.#status = "closed";
     this.#state.closed = true;
     this.#state.context.finalizer?.unregister(this);
     closeAddress(this.#state.context, this.#state.id, this.#state.peer, true);
-    if (this.#state.inbox.length === 0) this.#state.context.nonGCedPorts.delete(this);
+    if (this.#state.inbox.length === 0) retainedPorts(this.#state.context).delete(this);
   }
 
   [kDispose](): void {
@@ -873,15 +891,17 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
     const state = this.#state;
     this.close();
     abandonInbox(state);
-    state.context.nonGCedPorts.delete(this);
+    retainedPorts(state.context).delete(this);
   }
 
   static fromNative(port: MessagePort, context: WireContext = defaultContext): WireMessagePort {
     const channel = new WireMessageChannel(context);
-    port.addEventListener("message", (event) => transcodeFromNative(event, context, (data, ports) => channel.port2.postMessage(data, ports)));
-    channel.port2.addEventListener("message", (event) => transcodeToNative(event, (data, ports) => port.postMessage(data, ports)));
-    port.addEventListener("close", () => channel.port2.close(), { once: true });
-    channel.port2.addEventListener("close", () => port.close(), { once: true });
+    const listeners = new AbortController();
+    const closeBridge = (other: MessagePort) => () => { listeners.abort(); other.close(); };
+    port.addEventListener("message", (event) => transcodeFromNative(event, context, (data, ports) => channel.port2.postMessage(data, ports)), { signal: listeners.signal });
+    channel.port2.addEventListener("message", (event) => transcodeToNative(event, (data, ports) => port.postMessage(data, ports)), { signal: listeners.signal });
+    port.addEventListener("close", closeBridge(channel.port2), { once: true, signal: listeners.signal });
+    channel.port2.addEventListener("close", closeBridge(port), { once: true, signal: listeners.signal });
     port.start();
     channel.port2.start();
     return channel.port1;
@@ -891,9 +911,14 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
     if (this.#native) return this.#native;
     this.transferable = false;
     const channel = new globalThis.MessageChannel();
-    this.addEventListener("message", (event) => transcodeToNative(event, (data, ports) => channel.port2.postMessage(data, ports)));
-    channel.port2.addEventListener("message", (event) => transcodeFromNative(event, this.#state.context, (data, ports) => this.postMessage(data, ports)));
-    this.addEventListener("close", () => channel.port2.close(), { once: true });
+    const listeners = this.#nativeListeners = new AbortController();
+    listeners.signal.addEventListener("abort", () => {
+      channel.port2.close();
+      this.#nativeListeners = undefined;
+    }, { once: true });
+    this.addEventListener("message", (event) => transcodeToNative(event, (data, ports) => channel.port2.postMessage(data, ports)), { signal: listeners.signal });
+    channel.port2.addEventListener("message", (event) => transcodeFromNative(event, this.#state.context, (data, ports) => this.postMessage(data, ports)), { signal: listeners.signal });
+    this.addEventListener("close", () => listeners.abort(), { once: true, signal: listeners.signal });
     this.start();
     channel.port2.start();
     return this.#native = channel.port1;
@@ -959,6 +984,8 @@ export class WireEndpoint extends EventTarget {
     void link.writer.closed.catch((error) => disconnect(link, false, false, error));
     void readLink(link);
   }
+
+  get [kContext](): WireContext { return this.#link.context; }
 
   postMessage(message: any, transfer?: Transferable[] | StructuredSerializeOptions): void {
     const link = this.#link;

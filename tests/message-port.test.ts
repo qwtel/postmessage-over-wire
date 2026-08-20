@@ -141,9 +141,8 @@ describe("WireMessagePort", () => {
     closeAll(port1, port2);
   });
 
-  it("supports once listeners without keeping the port strongly referenced", async () => {
-    const context = createTestContext("once");
-    const { port1, port2 } = new WireMessageChannel(context);
+  it("removes once listeners after their first message", async () => {
+    const { port1, port2 } = new WireMessageChannel(createTestContext("once"));
     let count = 0;
     const received = new Promise<MessageEvent>((resolve) => {
       port2.addEventListener("message", (event) => {
@@ -157,40 +156,49 @@ describe("WireMessagePort", () => {
 
     expect((await received).data).toBe("first");
     port1.postMessage("second");
-    await Promise.resolve();
+    await settle();
     expect(count).toBe(1);
-    expect(context.nonGCedPorts.has(port2)).toBe(false);
 
     closeAll(port1, port2);
   });
 
-  it("keeps a port retained until its last message listener is removed", () => {
-    const context = createTestContext("listeners");
-    const { port1, port2 } = new WireMessageChannel(context);
-    const first = () => {};
-    const second = { handleEvent() {} };
+  it("removes one message listener without affecting the others", async () => {
+    const { port1, port2 } = new WireMessageChannel(createTestContext("listeners"));
+    const calls: string[] = [];
+    const first = () => calls.push("first");
+    const second = { handleEvent: () => calls.push("second") };
 
     port2.addEventListener("message", first);
     port2.addEventListener("message", second);
-    expect(context.nonGCedPorts.has(port2)).toBe(true);
+    port2.start();
+    port1.postMessage(null);
+    await settle();
+    expect(calls).toEqual(["first", "second"]);
 
     port2.removeEventListener("message", first);
-    expect(context.nonGCedPorts.has(port2)).toBe(true);
+    port1.postMessage(null);
+    await settle();
+    expect(calls).toEqual(["first", "second", "second"]);
 
     port2.removeEventListener("message", second);
-    expect(context.nonGCedPorts.has(port2)).toBe(false);
+    port1.postMessage(null);
+    await settle();
+    expect(calls).toEqual(["first", "second", "second"]);
     closeAll(port1, port2);
   });
 
-  it("keeps listener retention when removal uses the wrong capture value", () => {
-    const context = createTestContext("listener-capture");
-    const { port1, port2 } = new WireMessageChannel(context);
-    const listener = () => {};
+  it("does not remove a listener when the capture value differs", async () => {
+    const { port1, port2 } = new WireMessageChannel(createTestContext("listener-capture"));
+    let calls = 0;
+    const listener = () => calls++;
     try {
       port1.addEventListener("message", listener, true);
       port1.removeEventListener("message", listener, false);
+      port1.start();
+      port2.postMessage(null);
+      await settle();
 
-      expect(context.nonGCedPorts.has(port1)).toBe(true);
+      expect(calls).toBe(1);
     } finally {
       closeAll(port1, port2);
     }
@@ -244,31 +252,35 @@ describe("WireMessagePort", () => {
     }
   });
 
-  it("releases message-listener retention when its AbortSignal aborts", () => {
-    const context = createTestContext("listener-abort");
-    const { port1, port2 } = new WireMessageChannel(context);
+  it("removes a message listener when its AbortSignal aborts", async () => {
+    const { port1, port2 } = new WireMessageChannel(createTestContext("listener-abort"));
     const abort = new AbortController();
+    let calls = 0;
     try {
-      port2.addEventListener("message", () => {}, { signal: abort.signal });
-      expect(context.nonGCedPorts.has(port2)).toBe(true);
-
+      port2.addEventListener("message", () => calls++, { signal: abort.signal });
       abort.abort();
+      port2.start();
+      port1.postMessage(null);
+      await settle();
 
-      expect(context.nonGCedPorts.has(port2)).toBe(false);
+      expect(calls).toBe(0);
     } finally {
       closeAll(port1, port2);
     }
   });
 
-  it("does not retain a listener registered with an already-aborted signal", () => {
-    const context = createTestContext("listener-already-aborted");
-    const { port1, port2 } = new WireMessageChannel(context);
+  it("does not add a listener with an already-aborted signal", async () => {
+    const { port1, port2 } = new WireMessageChannel(createTestContext("listener-already-aborted"));
     const abort = new AbortController();
+    let calls = 0;
     abort.abort();
     try {
-      port2.addEventListener("message", () => {}, { signal: abort.signal });
+      port2.addEventListener("message", () => calls++, { signal: abort.signal });
+      port2.start();
+      port1.postMessage(null);
+      await settle();
 
-      expect(context.nonGCedPorts.has(port2)).toBe(false);
+      expect(calls).toBe(0);
     } finally {
       closeAll(port1, port2);
     }
@@ -289,7 +301,6 @@ describe("WireMessagePort", () => {
     port1.postMessage("second");
     await settle();
     expect(calls).toEqual(["new"]);
-    expect(context.nonGCedPorts.has(port2)).toBe(false);
 
     closeAll(port1, port2);
   });
