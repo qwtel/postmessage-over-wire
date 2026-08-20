@@ -3,6 +3,7 @@ import { describe, expect, it, setDefaultTimeout } from "bun:test";
 setDefaultTimeout(50);
 
 import { WireEndpoint, WireMessageChannel } from "../index";
+import { deserialize as deserializeFrame } from "@workers/v8-value-serializer/v8";
 import {
   closeAll,
   createEndpointPair,
@@ -18,6 +19,51 @@ import {
 } from "./test-util";
 
 describe("WireEndpoint", () => {
+  it("writes protocol frames and shipped inbox envelopes as compact positional tuples", async () => {
+    const [leftStream, rightStream] = createLinkedStreams();
+    const leftFrames: unknown[][] = [];
+    const rightFrames: unknown[][] = [];
+    const capture = (stream: typeof leftStream, frames: unknown[][]) => {
+      const writer = stream.writable.getWriter();
+      return {
+        readable: stream.readable,
+        writable: new WritableStream<Uint8Array>({
+          write(chunk) {
+            const length = new DataView(chunk.buffer, chunk.byteOffset, 4).getUint32(0, true);
+            expect(length).toBe(chunk.byteLength - 4);
+            const frame = deserializeFrame(chunk.subarray(4));
+            expect(Array.isArray(frame)).toBe(true);
+            frames.push(frame);
+            return writer.write(chunk);
+          },
+          close: () => writer.close(),
+          abort: (reason) => writer.abort(reason),
+        }),
+      };
+    };
+    const leftContext = createTestContext("tuple-left");
+    const left = new WireEndpoint(capture(leftStream, leftFrames), "left", leftContext);
+    const right = new WireEndpoint(capture(rightStream, rightFrames), "right", createTestContext("tuple-right"));
+    const channel = new WireMessageChannel(leftContext);
+    const transferred = nextMessage(right);
+
+    channel.port2.postMessage("queued before transfer");
+    left.postMessage("move", [channel.port1]);
+    const moved = (await transferred).ports[0];
+    const closed = nextEvent<CloseEvent>(moved, "close");
+    moved.start();
+    channel.port2.close();
+    await closed;
+    await settle();
+
+    expect(leftFrames.map(([type]) => type)).toEqual(["message", "close"]);
+    expect(rightFrames.map(([type]) => type)).toEqual(["moved"]);
+    const shippedPort = (leftFrames[0][/* .ports */ 3] as unknown[][])[0];
+    expect(Array.isArray(shippedPort)).toBe(true);
+    expect(Array.isArray((shippedPort[/* .inbox */ 2] as unknown[])[0])).toBe(true);
+    closeAll(channel.port1, channel.port2, moved, left, right);
+  });
+
   it("delivers without an explicit start() call", async () => {
     const [left, right] = createEndpointPair();
     const received = nextMessage(right);

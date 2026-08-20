@@ -1,61 +1,61 @@
 /**
- * Web Messaging over an ordered, full-duplex pair of byte streams.
+ * Movable Web Messaging ports over an ordered, full-duplex byte stream pair.
  *
- * This module implements `MessageChannel`-style movable port ends. A
- * `WireMessagePort` can be sent through another port or through a
- * `WireEndpoint`; its entanglement, queued messages, and future traffic move
- * with it. `WireEndpoint` is the carrier for a stream pair, not itself a
- * routed port end.
+ * `WireMessageChannel` creates an entangled pair of `WireMessagePort`s.
+ * `WireMessagePort` implements the `MessagePort` API and is transferable.
+ * `WireEndpoint` attaches a `WireContext` to one full-duplex transport link;
+ * unlike a port, the endpoint is a carrier and has no routed address.
  *
- * ## The model
+ * ```text
+ * context L                    transport                    context R
  *
- * Each port end has a stable address and a peer address. By default an address
- * is a uniformly random 128-bit bigint produced by `crypto.getRandomValues`,
- * which avoids coordinating allocation between contexts and makes collisions
- * negligible. Applications may inject another `generateId`; correctness only
- * requires its results to be unique across the connected routing domain.
+ * ports + routes   <── WireEndpoint ═════════ WireEndpoint ──> ports + routes
+ *                         writable  ──────>  readable
+ *                         readable  <──────  writable
+ * ```
  *
- * The `WireMessagePort` object is the transferable capability. Its address is
- * only the protocol's opaque routing label, not a Caplink-style application
- * capability ID or an authentication boundary. Random addresses also make
- * blind targeting impractical, but a stream peer still has to be trusted or
- * authenticated separately.
+ * The transport must preserve byte order and reliably surface EOF, errors,
+ * and cancellation. It need not preserve write boundaries. The protocol does
+ * not provide encryption, peer authentication, or a heartbeat for otherwise
+ * undetectable half-open links.
  *
- * A context contains one next-hop table. There are only two kinds of route:
+ * ## Routing
+ *
+ * Every port end has a stable address and the address of its entangled peer.
+ * A context maps each known address to exactly one next hop:
  *
  * ```text
  * address ── local ──> port state { peer, inbox, owner }
- * address ── link  ──> ordered writer for another context
+ * address ── link  ──> another context through a WireEndpoint
  * ```
  *
- * A newly-created local channel therefore looks like this:
+ * Posting on A looks up A's peer address B and follows B's route. Intermediate
+ * contexts perform the same lookup, so a moved port can be reached through any
+ * number of forwarding contexts.
  *
  * ```text
- * route table
- *
- *   A ──local──> state A { peer: B, inbox: [] }
- *   B ──local──> state B { peer: A, inbox: [] }
- *
- *   wrapper A                                   wrapper B
- *       │                                           │
- *       └── owns state A     A <──entangled──> B    └── owns state B
+ * state A --peer B--> [B: link 0->1] --> [B: link 1->2] --> [B: local state B]
+ * state B --peer A--> [A: link 2->1] --> [A: link 1->0] --> [A: local state A]
  * ```
  *
- * Posting on A looks up A's peer, B, and follows B's current route. The port
- * state owns the inbox independently of its JavaScript wrapper. This is what
- * makes messages queued before or during a move follow the port naturally.
+ * The default address generator returns a cryptographically random 128-bit
+ * bigint. A custom `generateId` may be supplied; its values must be unique
+ * across every context that can exchange routes. Addresses are opaque protocol
+ * labels. The transferable `WireMessagePort` object is the public capability.
  *
  * ## Moving a port
  *
- * A local move detaches the old wrapper and gives the same state to the
- * receiving wrapper. No protocol or forwarding route is needed.
+ * Port state owns its inbox independently of the JavaScript wrapper. A local
+ * transfer detaches the source wrapper and attaches the same state at delivery.
+ * Messages posted before the receiving wrapper exists remain in that inbox.
  *
- * A move across a link performs three operations synchronously, before the
- * transfer frame is queued:
+ * A remote transfer:
  *
- * 1. Detach the old wrapper.
- * 2. Put the port's state and complete inbox in the transfer frame.
- * 3. Change the local route for that address to the outbound link.
+ * 1. validates and serializes the complete message without side effects;
+ * 2. detaches each transferred wrapper exactly once;
+ * 3. snapshots each port's address, peer, and recursively nested inbox;
+ * 4. changes its route to the outbound link; and
+ * 5. queues the transfer frame on that link's ordered write chain.
  *
  * ```text
  * before moving B                 after B arrives
@@ -64,39 +64,18 @@
  * A ──local──> state A            A ──local──> A     A ──link──> L
  * B ──local──> state B            B ──link───> R     B ──local─> state B
  *
- *                    transfer B { inbox... }
+ *                    message { ports: [B] }
  *              L =============================> R
  * ```
  *
- * Because every write on a link shares one promise chain, the transfer frame
- * precedes messages which follow the newly-installed route. At intermediate
- * contexts, the same rule yields ordinary next-hop forwarding:
+ * Installing the outbound route before queueing the frame makes later traffic
+ * use the same ordered writer after the transfer descriptor. On arrival, the
+ * destination installs the port state before acknowledging the move or
+ * dispatching the carrier message.
  *
- * ```text
- * A -> B:
- * state A --peer B--> [B: link 0->1] --> [B: link 1->2] --> [B: local state B]
+ * ## Wire format
  *
- * B -> A:
- * state B --peer A--> [A: link 2->1] --> [A: link 1->0] --> [A: local state A]
- * ```
- *
- * A move carries a random token. Once the destination has installed the
- * state, a small `moved` frame retraces the path:
- *
- * ```text
- * state + move token  ───────────────────────────────>
- * moved(token)        <───────────────────────────────
- *                         prune stale forwarding routes
- * ```
- *
- * This is only a safe route-cleanup barrier. It is not acknowledgement that a
- * posted application message was handled, and it does not change the
- * synchronous `postMessage(): void` API.
- *
- * ## The byte stream
- *
- * Stream chunk boundaries have no protocol meaning. Frames are length-prefixed
- * and may be split or combined by the transport:
+ * The stream is a sequence of independently V8-serialized frames:
  *
  * ```text
  * +----------------------+--------------------------+
@@ -104,19 +83,68 @@
  * +----------------------+--------------------------+
  * ```
  *
- * Reads reassemble complete frames; EOF with a partial frame is an error.
- * Writes are serialized and wait for `writer.ready`. The stream pair must be
- * ordered and reliable. EOF, stream errors, and propagated cancellation tear
- * down only routes using the failed link. A transport which hides a half-open
- * failure would require its own heartbeat; this protocol does not add one.
+ * The byte count covers only the frame body. Readers accept arbitrary splitting
+ * and coalescing of frames. EOF with an incomplete prefix or body is an error.
+ * There are three frame bodies. Top-level frames are positional tuples to keep
+ * their serialized representation compact; the labels below document each
+ * position and are not written to the wire:
+ *
+ * ```ts
+ * type MessageFrame = [
+ *   type:  "message",
+ *   to:    PortId | null,      // null dispatches on the WireEndpoint
+ *   data:  Uint8Array,         // separately serialized application payload
+ *   ports: ShippedPort[],      // transferred ports, in transfer-list order
+ *   move:  string | null,      // route-cleanup token when ports are present
+ * ];
+ *
+ * type CloseFrame = [
+ *   type:  "close",
+ *   to:    PortId,
+ *   from:  PortId,
+ *   clean: boolean,
+ * ];
+ *
+ * type MovedFrame = [type: "moved", move: string];
+ * ```
+ *
+ * A transferred port includes messages and closes that were already waiting in
+ * its inbox. Transferred ports inside those messages are represented recursively:
+ *
+ * ```ts
+ * type ShippedPort = [
+ *   id:    PortId,
+ *   peer:  PortId,
+ *   inbox: Array<
+ *     | [type: "message", data: Uint8Array, ports: ShippedPort[]]
+ *     | [type: "close", clean: boolean]
+ *   >,
+ * ];
+ * ```
+ *
+ * Application payloads use a separate V8 serialization so transferred port
+ * references can be replaced by indices into `ports`. Deserialization restores
+ * those references to the same objects exposed through `MessageEvent.ports`.
+ * Non-port transferables such as `ArrayBuffer` are detached with
+ * `structuredClone` after successful payload serialization.
+ *
+ * `moved` is a routing-lifetime acknowledgement. It retraces a transfer's path
+ * and lets intermediate contexts discard obsolete forwarding entries only
+ * after the destination has installed the moved state. It does not acknowledge
+ * application handling or change the synchronous `postMessage(): void` API.
+ *
+ * Frame writes are serialized and wait for `writer.ready`. Link EOF or failure
+ * removes routes using that link and propagates an unclean close toward their
+ * remaining local or remote peers. Frame bodies currently have no magic,
+ * version negotiation, authentication, or size limit; both peers must use the
+ * same trusted protocol version.
  *
  * ## Web-platform behavior
  *
- * Payloads use V8 structured serialization. `ArrayBuffer` transfer uses
- * `structuredClone`, delivery is scheduled as a MessageChannel task, and
- * ownership uses `WeakRef` plus `FinalizationRegistry` when available. The
- * public classes provide the Web Messaging surface; routing and movement are
- * plain records and procedures below it.
+ * Message delivery uses task rather than microtask scheduling. `WeakRef` keeps
+ * port state independent of wrappers, while `FinalizationRegistry` performs
+ * best-effort cleanup when available. `WireMessagePort` remains a zero-length
+ * `DataView` so V8 serializers route it through their host-object hooks.
  *
  * @module
  */
@@ -134,21 +162,19 @@ type HeldPort = readonly [id: PortId, peer: PortId];
 type DuplexStream = { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
 
 type LocalEnvelope =
-  | { type: "message"; data: Uint8Array; ports: PortState[] }
-  | { type: "close"; clean: boolean };
+  | [type: "message", data: Uint8Array, ports: PortState[]]
+  | [type: "close",   clean: boolean                      ];
 
-type ShippedPort = { id: PortId; peer: PortId; inbox: ShippedEnvelope[] };
+type ShippedPort = [id: PortId, peer: PortId, inbox: ShippedEnvelope[]];
 
 type ShippedEnvelope =
-  | { type: "message"; data: Uint8Array; ports: ShippedPort[] }
-  | { type: "close"; clean: boolean };
+  | [type: "message", data: Uint8Array, ports: ShippedPort[]]
+  | [type: "close",   clean: boolean                        ];
 
-type MessageFrame = { type: "message"; to: PortId | null; data: Uint8Array; ports: ShippedPort[]; move: string | null };
-
-type Frame =
-  | MessageFrame
-  | { type: "close"; to: PortId; from: PortId; clean: boolean }
-  | { type: "moved"; move: string };
+type MessageFrame = [type: "message", to: PortId | null, data: Uint8Array, ports: ShippedPort[], move: string | null];
+type CloseFrame   = [type: "close",   to: PortId,        from: PortId,     clean: boolean                           ];
+type MovedFrame   = [type: "moved",   move: string                                                                  ];
+type Frame = MessageFrame | CloseFrame | MovedFrame;
 
 type LocalRoute = { type: "local"; port: PortState; peer: PortId };
 type LinkRoute = { type: "link"; link: Link; peer: PortId };
@@ -217,7 +243,7 @@ export function createWireContext(options: {
   };
 
   context.finalizer = options.finalizer === undefined && typeof FinalizationRegistry === "function"
-    ? new FinalizationRegistry<HeldPort>((held) => closeAddress(context, held[0], held[1], true))
+    ? new FinalizationRegistry<HeldPort>((held) => closeAddress(context, held[/* .id */ 0], held[/* .peer */ 1], true))
     : options.finalizer ?? null;
   return context;
 }
@@ -445,7 +471,7 @@ export class WireMessageEvent<T = any> extends Event implements MessageEventShap
 }
 
 function localState(context: WireContext, id: PortId, peer: PortId, inbox: LocalEnvelope[] = []): PortState {
-  const state: PortState = { context, id, peer, inbox, owner: null, scheduled: false, closed: inbox.some((item) => item.type === "close") };
+  const state: PortState = { context, id, peer, inbox, owner: null, scheduled: false, closed: inbox.some(([type]) => type === "close") };
   routes(context).set(id, { type: "local", port: state, peer });
   return state;
 }
@@ -454,46 +480,47 @@ const attach = (state: PortState) => ownerOf(state) ?? new WireMessagePort(kCons
 
 function enqueue(state: PortState, envelope: LocalEnvelope): void {
   state.inbox.push(envelope);
-  if (envelope.type === "close") state.closed = true;
+  if (envelope[0] === "close") state.closed = true;
   ownerOf(state)?.[kSchedule]();
 }
 
 function shippedPairs(ports: ShippedPort[], result: HeldPort[] = []): HeldPort[] {
-  for (const port of ports) {
-    result.push([port.id, port.peer]);
-    for (const envelope of port.inbox) if (envelope.type === "message") shippedPairs(envelope.ports, result);
+  for (const [id, peer, inbox] of ports) {
+    result.push([/* id: */ id, /* peer: */ peer]);
+    for (const envelope of inbox) if (envelope[0] === "message") shippedPairs(envelope[/* .ports */ 2], result);
   }
   return result;
 }
 
 function ship(state: PortState, link: Link): ShippedPort {
-  const inbox = state.inbox.map<ShippedEnvelope>((envelope) => envelope.type === "close"
+  const inbox = state.inbox.map<ShippedEnvelope>((envelope) => envelope[0] === "close"
     ? envelope
-    : { type: "message", data: envelope.data, ports: envelope.ports.map((port) => ship(port, link)) });
+    : ["message", /* data: */ envelope[1], /* ports: */ envelope[2].map((port) => ship(port, link))]);
   state.inbox.length = 0;
   routes(state.context).set(state.id, { type: "link", link, peer: state.peer });
-  return { id: state.id, peer: state.peer, inbox };
+  return [/* id: */ state.id, /* peer: */ state.peer, /* inbox: */ inbox];
 }
 
 function pointShipped(context: WireContext, ports: ShippedPort[], link: Link): void {
-  for (const port of ports) {
-    routes(context).set(port.id, { type: "link", link, peer: port.peer });
-    for (const envelope of port.inbox) if (envelope.type === "message") pointShipped(context, envelope.ports, link);
+  for (const [id, peer, inbox] of ports) {
+    routes(context).set(id, { type: "link", link, peer });
+    for (const envelope of inbox) if (envelope[0] === "message") pointShipped(context, envelope[/* .ports */ 2], link);
   }
 }
 
 function learnPeers(context: WireContext, ports: ShippedPort[], incoming: Link): void {
-  for (const port of ports) {
-    if (!routes(context).has(port.peer)) routes(context).set(port.peer, { type: "link", link: incoming, peer: port.id });
-    for (const envelope of port.inbox) if (envelope.type === "message") learnPeers(context, envelope.ports, incoming);
+  for (const [id, peer, inbox] of ports) {
+    if (!routes(context).has(peer)) routes(context).set(peer, { type: "link", link: incoming, peer: id });
+    for (const envelope of inbox) if (envelope[0] === "message") learnPeers(context, envelope[/* .ports */ 2], incoming);
   }
 }
 
 function importShipped(context: WireContext, port: ShippedPort, incoming: Link): PortState {
-  const inbox = port.inbox.map<LocalEnvelope>((envelope) => envelope.type === "close"
+  const [id, peer, shippedInbox] = port;
+  const inbox = shippedInbox.map<LocalEnvelope>((envelope) => envelope[0] === "close"
     ? envelope
-    : { type: "message", data: envelope.data, ports: envelope.ports.map((nested) => importShipped(context, nested, incoming)) });
-  return localState(context, port.id, port.peer, inbox);
+    : ["message", /* data: */ envelope[1], /* ports: */ envelope[2].map((nested) => importShipped(context, nested, incoming))]);
+  return localState(context, id, peer, inbox);
 }
 
 const transferList = (value?: Transferable[] | StructuredSerializeOptions) => Array.isArray(value) ? value : value?.transfer ?? [];
@@ -536,8 +563,9 @@ function prepareMessage(
 }
 
 function registerMove(context: WireContext, back: Link | null, forward: Link, frame: MessageFrame): void {
-  if (!frame.move) return;
-  pendingMoves(context).set(frame.move, { back, forward, ports: shippedPairs(frame.ports) });
+  const [, , , ports, move] = frame;
+  if (!move) return;
+  pendingMoves(context).set(move, { back, forward, ports: shippedPairs(ports) });
 }
 
 function pruneMove(context: WireContext, move: PendingMove): void {
@@ -553,14 +581,14 @@ function pruneMove(context: WireContext, move: PendingMove): void {
 }
 
 function acknowledge(link: Link, move: string | null): void {
-  if (move) void writeFrame(link, { type: "moved", move }).catch(() => {});
+  if (move) void writeFrame(link, ["moved", /* move: */ move]).catch(() => {});
 }
 
 function handleMoved(link: Link, token: string): void {
   const pending = pendingMoves(link.context).get(token);
   if (!pending || pending.forward !== link) return;
   pendingMoves(link.context).delete(token);
-  const forwarded = pending.back ? writeFrame(pending.back, { type: "moved", move: token }) : Promise.resolve();
+  const forwarded = pending.back ? writeFrame(pending.back, ["moved", /* move: */ token]) : Promise.resolve();
   void forwarded.then(() => pruneMove(link.context, pending)).catch(() => {});
 }
 
@@ -572,12 +600,12 @@ function sendPrepared(
   report: EventTarget,
 ): void {
   if (route.type === "local") {
-    enqueue(route.port, { type: "message", data: prepared.data, ports: prepared.local });
+    enqueue(route.port, ["message", /* data: */ prepared.data, /* ports: */ prepared.local]);
     return;
   }
 
   const token = prepared.shipped.length ? moveId() : null;
-  const frame: MessageFrame = { type: "message", to: destination, data: prepared.data, ports: prepared.shipped, move: token };
+  const frame: MessageFrame = ["message", /* to: */ destination, /* data: */ prepared.data, /* ports: */ prepared.shipped, /* move: */ token];
   registerMove(context, null, route.link, frame);
   void writeFrame(route.link, frame).catch((error) => report.dispatchEvent(new WireMessageEvent("messageerror", { data: error })));
 }
@@ -603,45 +631,47 @@ function dispatchEndpoint(endpoint: WireEndpoint, data: Uint8Array, states: Port
 
 function receiveMessage(link: Link, frame: MessageFrame): void {
   const context = link.context;
-  learnPeers(context, frame.ports, link);
+  const [, to, data, ports, move] = frame;
+  learnPeers(context, ports, link);
 
-  if (frame.to === null) {
-    const states = frame.ports.map((port) => importShipped(context, port, link));
-    acknowledge(link, frame.move);
-    dispatchEndpoint(link.endpoint, frame.data, states);
+  if (to === null) {
+    const states = ports.map((port) => importShipped(context, port, link));
+    acknowledge(link, move);
+    dispatchEndpoint(link.endpoint, data, states);
     return;
   }
 
-  const route = routes(context).get(frame.to);
+  const route = routes(context).get(to);
   if (!route) return;
   if (route.type === "local") {
-    const states = frame.ports.map((port) => importShipped(context, port, link));
-    acknowledge(link, frame.move);
-    enqueue(route.port, { type: "message", data: frame.data, ports: states });
+    const states = ports.map((port) => importShipped(context, port, link));
+    acknowledge(link, move);
+    enqueue(route.port, ["message", /* data: */ data, /* ports: */ states]);
   } else {
-    pointShipped(context, frame.ports, route.link);
+    pointShipped(context, ports, route.link);
     registerMove(context, link, route.link, frame);
     void writeFrame(route.link, frame).catch(() => {});
   }
 }
 
-function receiveClose(link: Link, frame: Extract<Frame, { type: "close" }>): void {
+function receiveClose(link: Link, frame: CloseFrame): void {
+  const [, to, from, clean] = frame;
   const table = routes(link.context);
-  const route = table.get(frame.to);
-  table.delete(frame.to);
-  table.delete(frame.from);
-  if (route?.type === "local") enqueue(route.port, { type: "close", clean: frame.clean });
+  const route = table.get(to);
+  table.delete(to);
+  table.delete(from);
+  if (route?.type === "local") enqueue(route.port, ["close", /* clean: */ clean]);
   else if (route?.type === "link") void writeFrame(route.link, frame).catch(() => {});
 }
 
-const isFrame = (value: unknown): value is Frame => !!value && typeof value === "object"
-  && ["message", "close", "moved"].includes((value as any).type);
+const isFrame = (value: unknown): value is Frame => Array.isArray(value)
+  && ["message", "close", "moved"].includes(value[0]);
 
 function receiveFrame(link: Link, value: unknown): void {
   if (!isFrame(value)) throw new Error("Malformed wire frame");
-  if (value.type === "message") receiveMessage(link, value);
-  else if (value.type === "close") receiveClose(link, value);
-  else handleMoved(link, value.move);
+  if (value[0] === "message") receiveMessage(link, value);
+  else if (value[0] === "close") receiveClose(link, value);
+  else handleMoved(link, value[/* .move */ 1]);
 }
 
 async function readLink(link: Link): Promise<void> {
@@ -685,8 +715,8 @@ function writeFrame(link: Link, frame: Frame): Promise<void> {
 const finishWriter = (link: Link) => link.writerDone ??= link.writes.catch(() => {}).then(() => link.writer.close()).catch(() => {});
 
 function notifyRoute(route: Route | undefined, to: PortId, from: PortId, clean: boolean): void {
-  if (route?.type === "local") enqueue(route.port, { type: "close", clean });
-  else if (route?.type === "link") void writeFrame(route.link, { type: "close", to, from, clean }).catch(() => {});
+  if (route?.type === "local") enqueue(route.port, ["close", /* clean: */ clean]);
+  else if (route?.type === "link") void writeFrame(route.link, ["close", /* to: */ to, /* from: */ from, /* clean: */ clean]).catch(() => {});
 }
 
 function disconnect(link: Link, clean: boolean, notifyRemote: boolean, _error?: unknown): void {
@@ -703,7 +733,7 @@ function disconnect(link: Link, clean: boolean, notifyRemote: boolean, _error?: 
     table.delete(id);
     table.delete(route.peer);
     if (peerRoute?.type === "link" && peerRoute.link === link) continue;
-    if (notifyRemote) void writeFrame(link, { type: "close", to: id, from: route.peer, clean }).catch(() => {});
+    if (notifyRemote) void writeFrame(link, ["close", /* to: */ id, /* from: */ route.peer, /* clean: */ clean]).catch(() => {});
     notifyRoute(peerRoute, route.peer, id, clean);
   }
 
@@ -790,13 +820,13 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
       }
       const envelope = state.inbox.shift();
       if (!envelope) return;
-      if (envelope.type === "close") {
+      if (envelope[0] === "close") {
         this.#status = "closed";
-        this.#events.dispatch(closeEvent(envelope.clean));
+        this.#events.dispatch(closeEvent(envelope[/* .clean */ 1]));
       } else {
-        const ports = envelope.ports.map(attach);
+        const ports = envelope[/* .ports */ 2].map(attach);
         try {
-          this.#events.dispatch(new WireMessageEvent("message", { data: decodePayload(envelope.data, ports), ports }));
+          this.#events.dispatch(new WireMessageEvent("message", { data: decodePayload(envelope[/* .data */ 1], ports), ports }));
         } catch (error) {
           this.#events.dispatch(new WireMessageEvent("messageerror", { data: error }));
         }
