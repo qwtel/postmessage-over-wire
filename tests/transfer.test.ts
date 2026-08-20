@@ -17,7 +17,7 @@ import {
 } from "./test-util";
 
 describe("moving MessagePort endpoints", () => {
-  it.failing("keeps messages sent before and after a local transfer in FIFO order", async () => {
+  it("keeps messages sent before and after a local transfer in FIFO order", async () => {
     const context = createTestContext("local-order");
     const carrier = new WireMessageChannel(context);
     const payload = new WireMessageChannel(context);
@@ -42,7 +42,7 @@ describe("moving MessagePort endpoints", () => {
     }
   });
 
-  it.failing("moves a queued inbox over a wire link", async () => {
+  it("moves a queued inbox over a wire link", async () => {
     const contextA = createTestContext("remote-queue-a");
     const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("remote-queue-b"));
     const payload = new WireMessageChannel(contextA);
@@ -194,7 +194,7 @@ describe("moving MessagePort endpoints", () => {
     closeAll(moved, endpointA, endpointB);
   });
 
-  it.failing("does not dispatch queued messages on the detached wrapper", async () => {
+  it("does not dispatch queued messages on the detached wrapper", async () => {
     const contextA = createTestContext("detached-events-a");
     const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("detached-events-b"));
     const payload = new WireMessageChannel(contextA);
@@ -216,7 +216,7 @@ describe("moving MessagePort endpoints", () => {
     }
   });
 
-  it.failing("does not lose close while a local transfer event is pending", async () => {
+  it("does not lose close while a local transfer event is pending", async () => {
     // Closing the peer currently deletes the pending route before the receiving
     // wrapper is installed, so the close event is lost.
     const context = createTestContext("local-close-race");

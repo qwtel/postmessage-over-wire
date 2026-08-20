@@ -227,7 +227,7 @@ describe("structured message data", () => {
     );
   });
 
-  it.failing("leaves every transferred port attached when data serialization fails", async () => {
+  it("leaves every transferred port attached when data serialization fails", async () => {
     const context = createTestContext("atomic-clone");
     const carrier = new WireMessageChannel(context);
     const first = new WireMessageChannel(context);
@@ -276,7 +276,7 @@ describe("structured message data", () => {
     expect(event.cancelable).toBe(false);
   });
 
-  it.failing("honors non-port transferables such as ArrayBuffer", async () => {
+  it("honors non-port transferables such as ArrayBuffer", async () => {
     // The public signature accepts Transferable[], but the implementation only
     // acts on WireMessagePort entries today. Preserve this as a conformance gap.
     const { port1, port2 } = new WireMessageChannel(createTestContext("array-buffer-transfer"));

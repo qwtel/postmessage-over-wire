@@ -182,7 +182,7 @@ describe("WireMessagePort", () => {
     closeAll(port1, port2);
   });
 
-  it.failing("keeps listener retention when removal uses the wrong capture value", () => {
+  it("keeps listener retention when removal uses the wrong capture value", () => {
     const context = createTestContext("listener-capture");
     const { port1, port2 } = new WireMessageChannel(context);
     const listener = () => {};
@@ -196,7 +196,7 @@ describe("WireMessagePort", () => {
     }
   });
 
-  it.failing("returns the callback assigned to onmessage", () => {
+  it("returns the callback assigned to onmessage", () => {
     const { port1, port2 } = new WireMessageChannel(createTestContext("onmessage-getter"));
     const listener = () => {};
     try {
@@ -208,7 +208,7 @@ describe("WireMessagePort", () => {
     }
   });
 
-  it.failing("returns null after onmessage is cleared", () => {
+  it("returns null after onmessage is cleared", () => {
     const { port1, port2 } = new WireMessageChannel(createTestContext("onmessage-clear"));
     try {
       port1.onmessage = () => {};
@@ -221,7 +221,7 @@ describe("WireMessagePort", () => {
     }
   });
 
-  it.failing("exposes the WireMessagePort itself as the event target", async () => {
+  it("exposes the WireMessagePort itself as the event target", async () => {
     // Delegating to a private EventTarget currently leaks that private object
     // through `this`, target, and currentTarget.
     const { port1, port2 } = new WireMessageChannel(createTestContext("event-target"));
@@ -244,7 +244,7 @@ describe("WireMessagePort", () => {
     }
   });
 
-  it.failing("releases message-listener retention when its AbortSignal aborts", () => {
+  it("releases message-listener retention when its AbortSignal aborts", () => {
     const context = createTestContext("listener-abort");
     const { port1, port2 } = new WireMessageChannel(context);
     const abort = new AbortController();
@@ -260,7 +260,7 @@ describe("WireMessagePort", () => {
     }
   });
 
-  it.failing("does not retain a listener registered with an already-aborted signal", () => {
+  it("does not retain a listener registered with an already-aborted signal", () => {
     const context = createTestContext("listener-already-aborted");
     const { port1, port2 } = new WireMessageChannel(context);
     const abort = new AbortController();
@@ -387,7 +387,7 @@ describe("WireMessagePort", () => {
     closeAll(port1);
   });
 
-  it.failing("queues messages sent to a port while it is being transferred locally", async () => {
+  it("queues messages sent to a port while it is being transferred locally", async () => {
     const context = createTestContext("pending");
     const carrier = new WireMessageChannel(context);
     const payload = new WireMessageChannel(context);
@@ -408,7 +408,7 @@ describe("WireMessagePort", () => {
     }
   });
 
-  it.failing("moves already-queued messages with a transferred port", async () => {
+  it("moves already-queued messages with a transferred port", async () => {
     const context = createTestContext("queued");
     const carrier = new WireMessageChannel(context);
     const payload = new WireMessageChannel(context);

@@ -29,7 +29,7 @@ describe("postmessage-over-wire", () => {
     closeAll(channelA.port1, channelA.port2, channelB.port1, channelB.port2);
   });
 
-  it.failing("generates cryptographically-random 128-bit bigint port IDs", () => {
+  it("generates cryptographically-random 128-bit bigint port IDs", () => {
     const context = wire.createWireContext({ finalizer: null });
     const { port1, port2 } = new wire.WireMessageChannel(context);
     try {

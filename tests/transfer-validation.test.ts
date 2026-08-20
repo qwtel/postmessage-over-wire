@@ -22,7 +22,7 @@ describe("postMessage transfer validation", () => {
     closeAll(port1, port2);
   });
 
-  it.failing("rejects transferring the same port twice without detaching it", async () => {
+  it("rejects transferring the same port twice without detaching it", async () => {
     const context = createTestContext("duplicate");
     const { port1, port2 } = new WireMessageChannel(context);
     const { port1: transferred, port2: peer } = new WireMessageChannel(context);
@@ -117,7 +117,7 @@ describe("postMessage transfer validation", () => {
     closeAll(payload.port2, remotePort, endpointA, endpointB);
   });
 
-  it.failing("makes close() on a detached wrapper a no-op", async () => {
+  it("makes close() on a detached wrapper a no-op", async () => {
     const contextA = createTestContext("detached-close-a");
     const [endpointA, endpointB] = createEndpointPair(contextA, createTestContext("detached-close-b"));
     const channel = new WireMessageChannel(contextA);
@@ -136,7 +136,7 @@ describe("postMessage transfer validation", () => {
     }
   });
 
-  it.failing("leaves earlier valid ports attached when a later transfer entry is invalid", async () => {
+  it("leaves earlier valid ports attached when a later transfer entry is invalid", async () => {
     const context = createTestContext("all-or-nothing");
     const carrier = new WireMessageChannel(context);
     const valid = new WireMessageChannel(context);
@@ -154,7 +154,7 @@ describe("postMessage transfer validation", () => {
     }
   });
 
-  it.failing("rejects a non-transferable value in the transfer list", () => {
+  it("rejects a non-transferable value in the transfer list", () => {
     const { port1, port2 } = new WireMessageChannel(createTestContext("invalid-transferable"));
     try {
       expect(() => port1.postMessage("invalid", [{} as Transferable])).toThrow(DOMException);
@@ -177,7 +177,7 @@ describe("postMessage transfer validation", () => {
     closeAll(native, carrier.port1, carrier.port2, payload.port1, payload.port2);
   });
 
-  it.failing("rejects transferring a port owned by another WireContext", () => {
+  it("rejects transferring a port owned by another WireContext", () => {
     // Moving IDs between independent route tables is not defined. The current
     // implementation accepts this and can leave the source context inconsistent.
     const carrier = new WireMessageChannel(createTestContext("context-a"));

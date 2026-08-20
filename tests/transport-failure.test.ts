@@ -28,7 +28,7 @@ describe("transport lifecycle and failures", () => {
     expect(closes).toBe(1);
   });
 
-  it.failing("reports an asynchronous write failure as messageerror", async () => {
+  it("reports an asynchronous write failure as messageerror", async () => {
     // The serializer pipe currently accepts the RPC write before its downstream
     // byte sink rejects, so the failed post is not associated with an event.
     const failure = new Error("write failed");
@@ -47,7 +47,7 @@ describe("transport lifecycle and failures", () => {
     }
   });
 
-  it.failing("closes the local peer of every channel routed through a failed writer", async () => {
+  it("closes the local peer of every channel routed through a failed writer", async () => {
     const contextA = createTestContext("fail-routes-a");
     const contextB = createTestContext("fail-routes-b");
     const [leftBase, rightStream] = createLinkedStreams();
@@ -87,7 +87,7 @@ describe("transport lifecycle and failures", () => {
     }
   });
 
-  it.failing("turns readable EOF into endpoint termination", async () => {
+  it("turns readable EOF into endpoint termination", async () => {
     let finish!: () => void;
     let closes = 0;
     const readable = new ReadableStream<Uint8Array>({
@@ -106,7 +106,7 @@ describe("transport lifecycle and failures", () => {
     }
   });
 
-  it.failing("propagates a one-direction write failure to the remote endpoint", async () => {
+  it("propagates a one-direction write failure to the remote endpoint", async () => {
     // A general readable/writable pair does not couple failure of one direction
     // to the opposite reader. Solving this requires a transport-level failure
     // signal or a liveness protocol; another frame cannot cross the broken path.

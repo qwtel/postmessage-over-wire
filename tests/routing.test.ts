@@ -75,7 +75,7 @@ describe("postmessage-over-wire routing", () => {
     closeAll(portAtC, port2, endpointA, endpointBFromA, endpointBToC, endpointC);
   });
 
-  it.failing("closes both sides of transferred channels when their wire link closes", async () => {
+  it("closes both sides of transferred channels when their wire link closes", async () => {
     const contextA = createTestContext("left");
     const contextB = createTestContext("right");
     const [left, right] = createLinkedStreams();
@@ -227,7 +227,7 @@ describe("postmessage-over-wire routing", () => {
     closeAll(portAtC, channel.port2, endpointA, endpointBFromA, endpointBToC, endpointC);
   });
 
-  it.failing("propagates an intermediate link termination to both channel endpoints", async () => {
+  it("propagates an intermediate link termination to both channel endpoints", async () => {
     const contextA = createTestContext("failure-a");
     const contextB = createTestContext("failure-b");
     const contextC = createTestContext("failure-c");

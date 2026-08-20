@@ -161,7 +161,7 @@ describe("WireEndpoint", () => {
     closeAll(endpoint);
   });
 
-  it.failing("terminates after an AbortError closes the readable side", async () => {
+  it("terminates after an AbortError closes the readable side", async () => {
     let fail!: (error: unknown) => void;
     let closes = 0;
     const readable = new ReadableStream<Uint8Array>({
@@ -182,7 +182,7 @@ describe("WireEndpoint", () => {
     }
   });
 
-  it.failing("reports malformed stream bytes and terminates the endpoint", async () => {
+  it("reports malformed stream bytes and terminates the endpoint", async () => {
     // DeserializerStream currently treats this truncated frame as an ordinary
     // end-of-stream instead of surfacing an error event.
     let push!: (chunk: Uint8Array) => void;
