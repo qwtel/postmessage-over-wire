@@ -124,7 +124,6 @@ import {
   DefaultDeserializer,
   DefaultSerializer,
   deserialize as deserializeFrame,
-  serialize as serializeFrame,
 } from "@workers/v8-value-serializer/v8";
 
 export type PortId = number | bigint | string;
@@ -180,6 +179,7 @@ type Link = {
 };
 
 const emptyBuffer = new ArrayBuffer(0);
+const emptyFramePrefix = new Uint8Array(4);
 const kConstruct = Symbol("constructWireMessagePort");
 const kState = Symbol("state");
 const kDetach = Symbol("detach");
@@ -298,10 +298,12 @@ function replaceReferences(value: any, replacements: Map<object, unknown>, seen 
 }
 
 function encodeFrame(frame: Frame): Uint8Array {
-  const body = serializeFrame(frame);
-  const result = new Uint8Array(body.byteLength + 4);
-  new DataView(result.buffer).setUint32(0, body.byteLength, true);
-  result.set(body, 4);
+  const serializer = new DefaultSerializer();
+  serializer.writeRawBytes(emptyFramePrefix);
+  serializer.writeHeader();
+  serializer.writeValue(frame);
+  const result = serializer.releaseBuffer();
+  new DataView(result.buffer, result.byteOffset, 4).setUint32(0, result.byteLength - 4, true);
   return result;
 }
 
@@ -653,13 +655,16 @@ async function readLink(link: Link): Promise<void> {
         return;
       }
       buffered = append(buffered, value);
-      while (buffered.byteLength >= 4) {
-        const length = new DataView(buffered.buffer, buffered.byteOffset, buffered.byteLength).getUint32(0, true);
-        if (buffered.byteLength < length + 4) break;
-        const body = buffered.slice(4, length + 4);
-        buffered = buffered.slice(length + 4);
+      let consumed = 0;
+      while (buffered.byteLength - consumed >= 4) {
+        const length = new DataView(buffered.buffer, buffered.byteOffset + consumed, 4).getUint32(0, true);
+        const end = consumed + length + 4;
+        if (buffered.byteLength < end) break;
+        const body = buffered.subarray(consumed + 4, end);
+        consumed = end;
         receiveFrame(link, deserializeFrame(body));
       }
+      if (consumed) buffered = consumed === buffered.byteLength ? new Uint8Array() : buffered.slice(consumed);
     }
   } catch (error) {
     if (link.status === "open" && !isAbortError(error)) link.endpoint.dispatchEvent(errorEvent(error));
@@ -669,10 +674,9 @@ async function readLink(link: Link): Promise<void> {
 
 function writeFrame(link: Link, frame: Frame): Promise<void> {
   if (link.status !== "open") return Promise.reject(new Error("Transport is closed"));
-  const bytes = encodeFrame(frame);
   const write = link.writes.then(async () => {
     await link.writer.ready;
-    await link.writer.write(bytes);
+    await link.writer.write(encodeFrame(frame));
   });
   link.writes = write.catch((error) => disconnect(link, false, false, error));
   return write;
