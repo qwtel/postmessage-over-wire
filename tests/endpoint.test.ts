@@ -58,9 +58,9 @@ describe("WireEndpoint", () => {
 
     expect(leftFrames.map(([type]) => type)).toEqual(["message", "close"]);
     expect(rightFrames.map(([type]) => type)).toEqual(["moved"]);
-    const shippedPort = (leftFrames[0][/* .ports */ 3] as unknown[][])[0];
+    const shippedPort = (leftFrames[0]/* .ports */[3] as unknown[][])[0];
     expect(Array.isArray(shippedPort)).toBe(true);
-    expect(Array.isArray((shippedPort[/* .inbox */ 2] as unknown[])[0])).toBe(true);
+    expect(Array.isArray((shippedPort/* .inbox */[2] as unknown[])[0])).toBe(true);
     closeAll(channel.port1, channel.port2, moved, left, right);
   });
 

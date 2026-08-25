@@ -240,7 +240,7 @@ function createRouter(options: {
   };
 
   router.finalizer = typeof FinalizationRegistry === "function"
-    ? new FinalizationRegistry<HeldPort>((held) => closeAddress(router, held[/* .id */ 0], held[/* .peer */ 1], true))
+    ? new FinalizationRegistry<HeldPort>((held) => closeAddress(router, held/*.id */[0], held/*.peer */[1], true))
     : null;
   return router;
 }
@@ -491,7 +491,7 @@ function enqueue(state: PortState, envelope: LocalEnvelope): void {
 function shippedPairs(ports: ShippedPort[], result: HeldPort[] = []): HeldPort[] {
   for (const [id, peer, inbox] of ports) {
     result.push([/* id: */ id, /* peer: */ peer]);
-    for (const envelope of inbox) if (envelope[0] === "message") shippedPairs(envelope[/* .ports */ 2], result);
+    for (const envelope of inbox) if (envelope[0] === "message") shippedPairs(envelope/*.ports */[2], result);
   }
   return result;
 }
@@ -508,14 +508,14 @@ function ship(state: PortState, link: Link): ShippedPort {
 function pointShipped(router: Router, ports: ShippedPort[], link: Link): void {
   for (const [id, peer, inbox] of ports) {
     router.routes.set(id, { type: "link", link, peer });
-    for (const envelope of inbox) if (envelope[0] === "message") pointShipped(router, envelope[/* .ports */ 2], link);
+    for (const envelope of inbox) if (envelope[0] === "message") pointShipped(router, envelope/*.ports */[2], link);
   }
 }
 
 function learnPeers(router: Router, ports: ShippedPort[], incoming: Link): void {
   for (const [id, peer, inbox] of ports) {
     if (!router.routes.has(peer)) router.routes.set(peer, { type: "link", link: incoming, peer: id });
-    for (const envelope of inbox) if (envelope[0] === "message") learnPeers(router, envelope[/* .ports */ 2], incoming);
+    for (const envelope of inbox) if (envelope[0] === "message") learnPeers(router, envelope/*.ports */[2], incoming);
   }
 }
 
@@ -523,7 +523,7 @@ function importShipped(router: Router, port: ShippedPort, incoming: Link): PortS
   const [id, peer, shippedInbox] = port;
   const inbox = shippedInbox.map<LocalEnvelope>((envelope) => envelope[0] === "close"
     ? envelope
-    : ["message", /* data: */ envelope[1], /* ports: */ envelope[2].map((nested) => importShipped(router, nested, incoming))]);
+    : ["message", /* data: */ envelope[1], /* ports: */ envelope/*.ports */[2].map((nested) => importShipped(router, nested, incoming))]);
   return localState(router, id, peer, inbox);
 }
 
@@ -585,7 +585,7 @@ function pruneMove(router: Router, move: PendingMove): void {
 }
 
 function acknowledge(link: Link, move: string | null): void {
-  if (move) void writeFrame(link, ["moved", /* move: */ move]).catch(() => {});
+  if (move) void writeFrame(link, ["moved", move]).catch(() => {});
 }
 
 function handleMoved(link: Link, token: string): void {
@@ -655,7 +655,7 @@ function receiveMessage(link: Link, frame: MessageFrame): void {
   if (route.type === "local") {
     const states = ports.map((port) => importShipped(router, port, link));
     acknowledge(link, move);
-    enqueue(route.port, ["message", /* data: */ data, /* ports: */ states]);
+    enqueue(route.port, ["message", data, /* ports: */ states]);
   } else {
     pointShipped(router, ports, route.link);
     registerMove(router, link, route.link, frame);
@@ -669,7 +669,7 @@ function receiveClose(link: Link, frame: CloseFrame): void {
   const route = table.get(to);
   table.delete(to);
   table.delete(from);
-  if (route?.type === "local") enqueue(route.port, ["close", /* clean: */ clean]);
+  if (route?.type === "local") enqueue(route.port, ["close", clean]);
   else if (route?.type === "link") void writeFrame(route.link, frame).catch(() => {});
 }
 
@@ -680,7 +680,7 @@ function receiveFrame(link: Link, value: unknown): void {
   if (!isFrame(value)) throw new Error("Malformed wire frame");
   if (value[0] === "message") receiveMessage(link, value);
   else if (value[0] === "close") receiveClose(link, value);
-  else handleMoved(link, value[/* .move */ 1]);
+  else handleMoved(link, value/*.move */[1]);
 }
 
 async function readLink(link: Link): Promise<void> {
@@ -724,8 +724,8 @@ function writeFrame(link: Link, frame: Frame): Promise<void> {
 const finishWriter = (link: Link) => link.writerDone ??= link.writes.catch(() => {}).then(() => link.writer.close()).catch(() => {});
 
 function notifyRoute(route: Route | undefined, to: PortId, from: PortId, clean: boolean): void {
-  if (route?.type === "local") enqueue(route.port, ["close", /* clean: */ clean]);
-  else if (route?.type === "link") void writeFrame(route.link, ["close", /* to: */ to, /* from: */ from, /* clean: */ clean]).catch(() => {});
+  if (route?.type === "local") enqueue(route.port, ["close", clean]);
+  else if (route?.type === "link") void writeFrame(route.link, ["close", to, from, clean]).catch(() => {});
 }
 
 function disconnect(link: Link, clean: boolean, notifyRemote: boolean, error?: unknown): void {
@@ -742,7 +742,7 @@ function disconnect(link: Link, clean: boolean, notifyRemote: boolean, error?: u
     table.delete(id);
     table.delete(route.peer);
     if (peerRoute?.type === "link" && peerRoute.link === link) continue;
-    if (notifyRemote) void writeFrame(link, ["close", /* to: */ id, /* from: */ route.peer, /* clean: */ clean]).catch(() => {});
+    if (notifyRemote) void writeFrame(link, ["close", /* to: */ id, /* from: */ route.peer, clean]).catch(() => {});
     notifyRoute(peerRoute, route.peer, id, clean);
   }
 
@@ -771,12 +771,12 @@ function abandonPorts(ports: PortState[]): void {
   for (const state of ports) {
     const inbox = state.inbox.splice(0);
     closeAddress(state.router, state.id, state.peer, true);
-    for (const envelope of inbox) if (envelope[0] === "message") abandonPorts(envelope[/* .ports */ 2]);
+    for (const envelope of inbox) if (envelope[0] === "message") abandonPorts(envelope/*.ports */[2]);
   }
 }
 
 function abandonInbox(state: PortState): void {
-  for (const envelope of state.inbox.splice(0)) if (envelope[0] === "message") abandonPorts(envelope[/* .ports */ 2]);
+  for (const envelope of state.inbox.splice(0)) if (envelope[0] === "message") abandonPorts(envelope/*.ports */[2]);
 }
 
 function transcodeToNative(event: MessageEvent, post: (data: unknown, ports: MessagePort[]) => void): void {
@@ -846,11 +846,11 @@ export class WireMessagePort extends DataView<ArrayBuffer> implements MessagePor
       if (!envelope) return;
       if (envelope[0] === "close") {
         this.#status = "closed";
-        this.#events.dispatch(closeEvent(envelope[/* .clean */ 1]));
+        this.#events.dispatch(closeEvent(envelope/*.clean */[1]));
       } else {
-        const ports = envelope[/* .ports */ 2].map(attach);
+        const ports = envelope/*.ports */[2].map(attach);
         try {
-          this.#events.dispatch(new WireMessageEvent("message", { data: decodePayload(envelope[/* .data */ 1], ports), ports }));
+          this.#events.dispatch(new WireMessageEvent("message", { data: decodePayload(envelope/*.data */[1], ports), ports }));
         } catch (error) {
           this.#events.dispatch(new WireMessageEvent("messageerror", { data: error }));
         }
